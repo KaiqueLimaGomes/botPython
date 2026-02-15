@@ -19,12 +19,16 @@ BotMaestroSDK.RAISE_NOT_CONNECTED = False
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 # =========================
-# CONFIG
+# CONFIG (HUD / BOXES)
 # =========================
 HUD_BOX = (202, 36, 59, 24)            # HUD X,Y (x,y,w,h)
 HUD_BOX_VALOR = (1394, 260, 39, 22)    # HUD do valor/pontos (x,y,w,h)
 LEVEL_BOX = (1316, 188, 31, 27)        # HUD do level (x,y,w,h)
 
+# =========================
+# ROTAS
+# =========================
+# Lorencia -> Cemitério
 CEMITERIO_ROUTE = [
     (134, 139),
     (134, 150),
@@ -36,21 +40,39 @@ CEMITERIO_ROUTE = [
 ]
 TARGET_FUTURO_LOR = (133, 224)
 
-BUTTON_BOX = (223, 60, 26, 28)
+# Arena -> Spot Play
+ARENA_ROUTE = [
+    (56, 47),
+    (38, 48),
+    (38, 66),
+    (38, 74),
+    (29, 75),  # final
+]
+TARGET_ARENA_FINAL = (29, 75)
 
+# Botão HUD
+Btn_play = (223, 60, 26, 28)  # renomeado (antes BUTTON_BOX)
+
+# =========================
+# TEMPOS / LIMITES
+# =========================
 FUTURO_TIMEOUT_S = 220
 
 LEVEL_CHECK_EVERY_S = 60
-TARGET_LEVEL = 100
+TARGET_LEVEL_CEMITERIO = 100
+TARGET_LEVEL_RESET = 380
 
-MOVE_CMD = "/move arena"
-CHAT_OPEN_WAIT_S = 5
-CHAT_AFTER_TYPE_WAIT_S = 5
-AFTER_MOVE_WAIT_S = 10
+# Chat
+CHAT_OPEN_WAIT_S = 0.30
+CHAT_AFTER_TYPE_WAIT_S = 0.20
+CHAT_AFTER_SEND_WAIT_S = 0.50
 
-INITIAL_C_OPEN_DELAY = 1.10
-INITIAL_C_READ_DELAY = 0.80
-INITIAL_C_CLOSE_DELAY = 0.35
+MOVE_CMD_ARENA = "/move arena"
+RESET_CMD = "/reset"
+
+# Janela C (pedido)
+C_OPEN_WAIT_S = 5.0      # aguarda 5s após abrir C (carregar dados)
+C_CLOSE_WAIT_S = 0.20
 
 # =========================
 # LIMITES / OCR
@@ -65,12 +87,10 @@ _last_good = None
 # =========================
 AFTER_KEY_PAUSE_S = 2.5
 HOLD_S = 0.10
-
 STUCK_SAME_READS = 6
 
 X_BAND_MIN = 133
 X_BAND_MAX = 135
-
 LANE_WEIGHT = 2.0
 WRONG_WAY_WEIGHT = 0.6
 
@@ -79,7 +99,6 @@ KEY_DOWN = "down"
 KEY_LEFT = "left"
 KEY_RIGHT = "right"
 
-# Vetores medidos por você
 ACTIONS = [
     {"name": "UP",          "keys": [KEY_UP],                "dx": -3, "dy": +3},
     {"name": "DOWN",        "keys": [KEY_DOWN],              "dx": +3, "dy": -3},
@@ -92,9 +111,6 @@ ACTIONS = [
     {"name": "DOWN+LEFT",   "keys": [KEY_DOWN, KEY_LEFT],    "dx":  0, "dy": -4},
 ]
 
-# =========================
-# STUCK / ESCAPE CONFIG
-# =========================
 ESCAPE_TRIES = 6
 ESCAPE_TOPK = 4
 ESCAPE_RANDOM_EPS = 0.25
@@ -125,14 +141,9 @@ def _key_up(k: str):
     pyautogui.keyUp(k)
 
 def press_keys_simultaneous(keys, hold_s=HOLD_S, after_pause_s=AFTER_KEY_PAUSE_S):
-    """
-    Pressiona (keyDown) todas as teclas AO MESMO TEMPO (via threads),
-    segura por hold_s (mesmo tempo para todas),
-    e solta (keyUp) todas AO MESMO TEMPO.
-    """
+    """Pressiona TODAS as teclas ao mesmo tempo pela MESMA duração."""
     keys = list(keys)
 
-    # DOWN simultâneo
     threads = []
     for k in keys:
         t = threading.Thread(target=_key_down, args=(k,))
@@ -143,7 +154,6 @@ def press_keys_simultaneous(keys, hold_s=HOLD_S, after_pause_s=AFTER_KEY_PAUSE_S
 
     time.sleep(max(0.01, hold_s))
 
-    # UP simultâneo
     threads = []
     for k in keys:
         t = threading.Thread(target=_key_up, args=(k,))
@@ -153,6 +163,12 @@ def press_keys_simultaneous(keys, hold_s=HOLD_S, after_pause_s=AFTER_KEY_PAUSE_S
         t.join()
 
     time.sleep(after_pause_s)
+
+def focus_game_window():
+    """Clique leve no centro para garantir foco do client."""
+    w, h = pyautogui.size()
+    pyautogui.click(w // 2, int(h * 0.55))
+    time.sleep(0.05)
 
 # =========================
 # LUGAR (Lorencia / Arena)
@@ -272,20 +288,7 @@ def get_current_xy_filtered(hud_box, samples=7, delay=0.07) -> tuple[int, int] |
     _last_good = candidate
     return candidate
 
-def get_current_value_filtered(hud_box, samples=6, delay=0.08) -> int | None:
-    vals = []
-    for _ in range(samples):
-        v = ocr_read_value_once(hud_box)
-        if v is not None:
-            vals.append(v)
-        time.sleep(delay)
-
-    if not vals:
-        return None
-
-    return Counter(vals).most_common(1)[0][0]
-
-def get_level_filtered(samples=7, delay=0.08) -> int | None:
+def get_level_filtered(samples=8, delay=0.09) -> int | None:
     vals = []
     for _ in range(samples):
         v = ocr_read_value_once(LEVEL_BOX)
@@ -296,8 +299,125 @@ def get_level_filtered(samples=7, delay=0.08) -> int | None:
         return None
     return Counter(vals).most_common(1)[0][0]
 
+def get_points_filtered(samples=8, delay=0.09) -> int | None:
+    vals = []
+    for _ in range(samples):
+        v = ocr_read_value_once(HUD_BOX_VALOR)
+        if v is not None:
+            vals.append(v)
+        time.sleep(delay)
+    if not vals:
+        return None
+    return Counter(vals).most_common(1)[0][0]
+
 # =========================
-# PLANNER
+# JANELA C (LEVEL / POINTS)
+# =========================
+def open_c_wait():
+    focus_game_window()
+    pyautogui.press('c')
+    time.sleep(C_OPEN_WAIT_S)
+
+def close_c():
+    focus_game_window()
+    pyautogui.press('c')
+    time.sleep(C_CLOSE_WAIT_S)
+
+def read_level_with_c() -> int | None:
+    open_c_wait()
+    lvl = get_level_filtered(samples=8, delay=0.09)
+    close_c()
+    return lvl
+
+def read_points_with_c() -> int | None:
+    open_c_wait()
+    pts = get_points_filtered(samples=8, delay=0.09)
+    close_c()
+    return pts
+
+# =========================
+# CHAT HELPERS
+# =========================
+def send_chat_line(text: str):
+    focus_game_window()
+    pyautogui.press('enter')
+    time.sleep(CHAT_OPEN_WAIT_S)
+    pyautogui.write(text, interval=0.02)
+    time.sleep(CHAT_AFTER_TYPE_WAIT_S)
+    pyautogui.press('enter')
+    time.sleep(CHAT_AFTER_SEND_WAIT_S)
+
+# =========================
+# DISTRIBUIÇÃO DE PONTOS (ARENA / INÍCIO)
+# =========================
+def apply_stat_with_validation(cmd: str, value: int, retries=2) -> bool:
+    """
+    Valida por OCR: lê pontos antes/depois (abrindo C e esperando 5s).
+    """
+    before = read_points_with_c()
+    log(f"[VAL] antes de {cmd}: pontos={before}")
+
+    for attempt in range(1, retries + 1):
+        log(f"[CHAT] enviando: {cmd} {value}")
+        send_chat_line(f"{cmd} {value}")
+
+        after = read_points_with_c()
+        log(f"[VAL] depois de {cmd} (tentativa {attempt}/{retries}): pontos={after}")
+
+        if before is None or after is None:
+            log("[VAL] OCR falhou -> retry")
+            continue
+
+        if after < before:
+            log(f"[VAL] OK: pontos diminuíram ({before} -> {after})")
+            return True
+
+        log(f"[VAL] pontos não mudaram ({before} -> {after}) -> retry")
+
+    log(f"[VAL] Falhou em validar {cmd}.")
+    return False
+
+def distribute_points_55_25_15_5():
+    """
+    Lê pontos atuais e distribui:
+      Força 55% / Agi 25% / Vit 15% / Ene 5%
+    """
+    pts = read_points_with_c()
+    log(f"[PONTOS] lidos: {pts}")
+
+    if pts is None:
+        log("[PONTOS] não consegui ler -> pulando distribuição.")
+        return
+
+    if pts <= 0:
+        log("[PONTOS] 0 pontos -> nada a distribuir.")
+        return
+
+    f = int(round(pts * 0.55))
+    a = int(round(pts * 0.25))
+    v = int(round(pts * 0.15))
+    e = int(round(pts * 0.05))
+
+    # Ajuste para não passar do total (por arredondamento)
+    total = f + a + v + e
+    if total > pts:
+        diff = total - pts
+        f = max(0, f - diff)
+
+    log(f"[DIST] Força={f} Agi={a} Vit={v} Ene={e}")
+
+    for cmd, val in [('/f', f), ('/a', a), ('/v', v), ('/e', e)]:
+        if val <= 0:
+            continue
+        ok = apply_stat_with_validation(cmd, val, retries=2)
+        if not ok:
+            log(f"[WARN] não confirmei {cmd}, seguindo...")
+
+    final_pts = read_points_with_c()
+    log(f"[DIST] pontos finais: {final_pts}")
+
+# =========================
+# PLANNER / SCORE
 # =========================
 def squared_dist(x1, y1, x2, y2):
     dx = (x2 - x1)
@@ -343,14 +463,6 @@ def rank_actions(cur, target, enforce_lane: bool):
 def choose_best_action(cur, target, enforce_lane: bool):
     return rank_actions(cur, target, enforce_lane)[0][1]
 
-def log_navigation_profile():
-    log("[NAV] MODO SETAS (VETORIAL) ativo:")
-    log(f"      after_key_pause={AFTER_KEY_PAUSE_S}s | hold={HOLD_S}s | stuck_reads={STUCK_SAME_READS}")
-    log(f"      X_BAND (coluna 134): {X_BAND_MIN}..{X_BAND_MAX} | lane_weight={LANE_WEIGHT} | wrong_way_weight={WRONG_WAY_WEIGHT}")
-    log("      ações:")
-    for a in ACTIONS:
-        log(f"        - {a['name']:>11} keys={a['keys']} delta=({a['dx']:+d},{a['dy']:+d})")
-
 # =========================
 # ESCAPE WHEN STUCK
 # =========================
@@ -382,6 +494,7 @@ def escape_when_stuck(hud_box, target_xy, enforce_lane: bool) -> bool:
             why = "cycle_pool"
 
         log(f"[ESCAPE] {i}/{ESCAPE_TRIES} -> {a['name']} ({why}) keys={a['keys']} delta=({a['dx']},{a['dy']})")
+        focus_game_window()
         press_keys_simultaneous(a["keys"], hold_s=HOLD_S)
 
         cur1 = get_current_xy_filtered(hud_box, samples=7, delay=0.07)
@@ -422,6 +535,7 @@ def walk_to_arrows(hud_box, target_xy: tuple[int, int], label="ALVO",
             time.sleep(0.2)
             if ocr_fail >= 3:
                 log("[ACTION] OCR falhando -> passo reset (DOWN+LEFT)")
+                focus_game_window()
                 press_keys_simultaneous([KEY_DOWN, KEY_LEFT], hold_s=HOLD_S)
                 ocr_fail = 0
             continue
@@ -446,7 +560,7 @@ def walk_to_arrows(hud_box, target_xy: tuple[int, int], label="ALVO",
         last_xy = cur
 
         if same_reads >= STUCK_SAME_READS:
-            log(f"[STUCK] {same_reads} leituras iguais -> ESCAPE (tentar outras direções)")
+            log(f"[STUCK] {same_reads} leituras iguais -> ESCAPE (outras direções)")
             ok = escape_when_stuck(hud_box, target_xy, enforce_x_lane)
             same_reads = 0
             if ok:
@@ -454,18 +568,19 @@ def walk_to_arrows(hud_box, target_xy: tuple[int, int], label="ALVO",
                 continue
             escape_cycles += 1
             if escape_cycles >= ESCAPE_MAX_GLOBAL:
-                log("[STUCK] muitas tentativas de escape sem sucesso -> aborta este alvo")
+                log("[STUCK] muitas tentativas sem sucesso -> aborta este alvo")
                 return False
             continue
 
         a = choose_best_action(cur, target_xy, enforce_x_lane)
         log(f"[MOVE] {a['name']} keys={a['keys']} delta=({a['dx']},{a['dy']})")
+        focus_game_window()
         press_keys_simultaneous(a["keys"], hold_s=HOLD_S)
 
 # =========================
 # ROTA CHECKPOINTS
 # =========================
-def walk_route_with_checkpoints_arrows(hud_box, checkpoints, total_timeout_s=220) -> bool:
+def walk_route_with_checkpoints_arrows(hud_box, checkpoints, total_timeout_s=220, lane_for_x_134=False) -> bool:
     log(f"[ROUTE] (ARROWS-VECT) Iniciando rota com {len(checkpoints)} checkpoints. Timeout total={total_timeout_s}s")
     start = time.time()
 
@@ -478,7 +593,7 @@ def walk_route_with_checkpoints_arrows(hud_box, checkpoints, total_timeout_s=220
         base = 80 if idx <= 2 else 65
         slice_timeout = max(base, int(remaining / (len(checkpoints) - idx + 1)))
 
-        enforce_lane = (cp[0] == 134)
+        enforce_lane = (lane_for_x_134 and cp[0] == 134)
         tol_x = 1 if enforce_lane else 2
         tol_y = 2
 
@@ -501,180 +616,93 @@ def walk_route_with_checkpoints_arrows(hud_box, checkpoints, total_timeout_s=220
     return True
 
 # =========================
-# JIN (clique offsets, mantido)
+# MOVE / RESET
 # =========================
-def click_relative_safe(dx: int, dy: int, center_y_ratio=0.55):
-    w, h = pyautogui.size()
-    cx = w // 2
-    cy = int(h * center_y_ratio)
-    pyautogui.click(cx + dx, cy + dy)
+def send_move_arena_and_verify(bot: DesktopBot) -> bool:
+    log("[MOVE] enviando /move arena...")
+    send_chat_line(MOVE_CMD_ARENA)
+    log("[MOVE] aguardando 5s...")
+    time.sleep(5.0)
+    log("[MOVE] verificando Arena...")
+    return ensure_arena(bot)
 
-def go_exact_arrows(hud_box, xy: tuple[int,int], label: str) -> bool:
-    return walk_to_arrows(hud_box, xy, label=label, tol_x=1, tol_y=1, timeout_s=120, enforce_x_lane=False)
-
-def click_jin_by_offsets(hud_box, base_xy=(135,126)) -> bool:
-    if not go_exact_arrows(hud_box, base_xy, "BASE_JIN"):
-        return False
-
-    offsets = [
-        (0, -180), (0, -160), (0, -140), (0, -120),
-        (40, -180), (-40, -180),
-        (60, -160), (-60, -160),
-        (80, -140), (-80, -140),
-        (100, -120), (-100, -120),
-        (120, -110), (-120, -110),
-        (140, -100), (-140, -100),
-        (160, -90), (-160, -90),
-        (0, -100),
-    ]
-
-    log("[JIN] Tentando cliques por offsets (sem mover)...")
-
-    for i, (dx, dy) in enumerate(offsets, 1):
-        before = get_current_xy_filtered(hud_box, samples=7, delay=0.07)
-        if not before:
-            log("[JIN] OCR falhou antes do clique, tentando próximo...")
-            continue
-
-        log(f"[JIN] tentativa {i}/{len(offsets)} click({dx},{dy}) from={before}")
-        click_relative_safe(dx, dy)
-        time.sleep(0.60)
-
-        after = get_current_xy_filtered(hud_box, samples=7, delay=0.07)
-        if not after:
-            log("[JIN] OCR falhou após clique, tentando próximo...")
-            continue
-
-        moved = (abs(after[0] - before[0]) > 1) or (abs(after[1] - before[1]) > 1)
-        if moved:
-            log(f"[JIN] virou movimento (before={before} after={after}) -> próximo offset")
-            continue
-
-        log(f"[JIN] clique sem mover (before={before} after={after}) -> OK provável")
-        return True
-
-    log("[JIN] Não conseguiu clicar sem mover. Ajuste offsets.")
-    return False
+def send_reset_and_wait_lorencia(bot: DesktopBot, wait_s=10.0) -> bool:
+    log("[RESET] enviando /reset...")
+    send_chat_line(RESET_CMD)
+    log(f"[RESET] aguardando {wait_s:.0f}s para voltar...")
+    time.sleep(wait_s)
+    log("[RESET] verificando Lorencia...")
+    return ensure_lorencia(bot)
 
 # =========================
-# STATS / CHAT
-# =========================
-def get_initial_level_from_c(open_delay=INITIAL_C_OPEN_DELAY,
-                             read_delay=INITIAL_C_READ_DELAY,
-                             close_delay=INITIAL_C_CLOSE_DELAY) -> int | None:
-    pyautogui.press('c')
-    time.sleep(open_delay)
-    time.sleep(read_delay)
-    lvl = get_level_filtered(samples=8, delay=0.09)
-    pyautogui.press('c')
-    time.sleep(close_delay)
-    return lvl
-
-def read_points_from_c(hud_box_valor, open_delay=0.35, read_delay=0.35, close_delay=0.15) -> int | None:
-    pyautogui.press('c')
-    time.sleep(open_delay)
-    time.sleep(read_delay)
-    val = get_current_value_filtered(hud_box_valor, samples=6, delay=0.08)
-    pyautogui.press('c')
-    time.sleep(close_delay)
-    return val
-
-def send_chat_command(cmd: str, value: int,
-                      open_delay=0.35,
-                      type_delay=0.15,
-                      send_delay=0.35):
-    log(f"[CHAT] enviando: {cmd} {value}")
-    pyautogui.press('enter')
-    time.sleep(open_delay)
-    pyautogui.write(f"{cmd} {value}", interval=0.02)
-    time.sleep(type_delay)
-    pyautogui.press('enter')
-    time.sleep(send_delay)
-
-def apply_stat_with_validation(cmd: str, value: int, hud_box_valor,
-                               retries=2,
-                               open_delay=0.35,
-                               type_delay=0.15,
-                               send_delay=0.35) -> bool:
-    before = read_points_from_c(hud_box_valor)
-    log(f"[VAL] antes de {cmd}: pontos={before}")
-
-    for attempt in range(1, retries + 1):
-        send_chat_command(cmd, value, open_delay=open_delay, type_delay=type_delay, send_delay=send_delay)
-
-        after = read_points_from_c(hud_box_valor)
-        log(f"[VAL] depois de {cmd} (tentativa {attempt}/{retries}): pontos={after}")
-
-        if after is None or before is None:
-            log("[VAL] OCR do valor falhou -> tentando novamente")
-            time.sleep(0.3)
-            continue
-
-        if after < before:
-            log(f"[VAL] OK: pontos diminuíram ({before} -> {after})")
-            return True
-
-        log(f"[VAL] pontos não mudaram ({before} -> {after}) -> retry")
-        time.sleep(0.35)
-
-    log(f"[VAL] Falhou em validar aplicação do comando {cmd}.")
-    return False
-
-# =========================
-# UP: CEMITÉRIO -> LVL 100 -> MOVE ARENA
+# CEMITÉRIO: andar + upar até 100 + ir arena
 # =========================
 def go_cemiterio_and_up_until_100_then_move_arena(bot: DesktopBot):
-    log(f"[UP] Indo para CEMITÉRIO via checkpoints (ARROWS-VECT) timeout total {FUTURO_TIMEOUT_S}s...")
-
-    ok = walk_route_with_checkpoints_arrows(
-        HUD_BOX,
-        CEMITERIO_ROUTE,
-        total_timeout_s=FUTURO_TIMEOUT_S
-    )
+    log(f"[UP] Indo para CEMITÉRIO via checkpoints timeout total {FUTURO_TIMEOUT_S}s...")
+    ok = walk_route_with_checkpoints_arrows(HUD_BOX, CEMITERIO_ROUTE, total_timeout_s=FUTURO_TIMEOUT_S, lane_for_x_134=True)
     if not ok:
-        not_found("não conseguiu completar a rota do cemitério dentro do tempo")
+        not_found("não conseguiu completar a rota do cemitério")
         return
 
-    log(f"[UP] Chegou no CEMITÉRIO FINAL {TARGET_FUTURO_LOR}. Clicando botão {BUTTON_BOX}...")
-    click_box_center(BUTTON_BOX)
+    log(f"[UP] Chegou no CEMITÉRIO FINAL {TARGET_FUTURO_LOR}. Clicando Btn_play {Btn_play}...")
+    click_box_center(Btn_play)
     time.sleep(0.8)
 
-    log("[UP] Monitorando level (1 minuto) até >= 100...")
+    log("[UP] Monitorando level a cada 60s até >= 100 (C abre -> espera 5s -> lê -> fecha)...")
     while True:
-        lvl = get_level_filtered(samples=7, delay=0.08)
+        lvl = read_level_with_c()
         log(f"[LEVEL] atual: {lvl}")
 
-        if lvl is not None and lvl >= TARGET_LEVEL:
-            log(f"[UP] Level {lvl} atingiu >= {TARGET_LEVEL}.")
+        if lvl is not None and lvl >= TARGET_LEVEL_CEMITERIO:
+            log(f"[UP] Level {lvl} >= {TARGET_LEVEL_CEMITERIO}. Indo Arena.")
             break
 
         time.sleep(LEVEL_CHECK_EVERY_S)
 
-    log("[UP] Fechando janela com tecla 'c'...")
-    pyautogui.press('c')
-    time.sleep(0.4)
-
-    log("[UP] Enviando /move arena...")
-    pyautogui.press('enter')
-    time.sleep(CHAT_OPEN_WAIT_S)
-
-    pyautogui.write(MOVE_CMD, interval=0.02)
-    time.sleep(CHAT_AFTER_TYPE_WAIT_S)
-
-    pyautogui.press('enter')
-    log("[UP] /move arena enviado. Aguardando 10s...")
-    time.sleep(AFTER_MOVE_WAIT_S)
-
-    log("[UP] Verificando se está em Arena...")
-    if ensure_arena(bot):
+    ok_arena = send_move_arena_and_verify(bot)
+    if ok_arena:
         log("[OK] Entrou em Arena.")
     else:
-        log("[WARN] Não confirmei Arena. (Se possível, adicione Arena.png nos resources.)")
+        log("[WARN] Não confirmei Arena ainda.")
 
 # =========================
-# MAIN
+# ARENA: distribuir pontos + navegar spot + clicar play + upar até 380 + /reset
 # =========================
-def main():
+def arena_flow(bot: DesktopBot):
+    log("[ARENA] Entrou em Arena -> distribuir pontos (55/25/15/5).")
+    distribute_points_55_25_15_5()
+
+    log("[ARENA] Indo para rota Arena -> destino final.")
+    ok = walk_route_with_checkpoints_arrows(HUD_BOX, ARENA_ROUTE, total_timeout_s=360, lane_for_x_134=False)
+    if not ok:
+        not_found("falhou rota na arena")
+        return
+
+    log(f"[ARENA] Chegou no destino {TARGET_ARENA_FINAL}. Clicando Btn_play {Btn_play}...")
+    click_box_center(Btn_play)
+    time.sleep(0.8)
+
+    log("[ARENA] Monitorando level a cada 60s até >= 380...")
+    while True:
+        lvl = read_level_with_c()
+        log(f"[LEVEL] atual: {lvl}")
+
+        if lvl is not None and lvl >= TARGET_LEVEL_RESET:
+            log(f"[ARENA] Level {lvl} >= {TARGET_LEVEL_RESET}. Enviando /reset.")
+            break
+
+        time.sleep(LEVEL_CHECK_EVERY_S)
+
+    ok_lor = send_reset_and_wait_lorencia(bot, wait_s=12.0)
+    if ok_lor:
+        log("[OK] Voltou para Lorencia após reset. Reiniciando loop.")
+    else:
+        log("[WARN] Não confirmei Lorencia após reset (talvez delay maior).")
+
+# =========================
+# MAIN LOOP
+# =========================
+def main_loop():
     maestro = BotMaestroSDK.from_sys_args()
     execution = maestro.get_execution()
     log(f"Task ID is: {execution.task_id}")
@@ -682,104 +710,47 @@ def main():
 
     bot = DesktopBot()
 
-    if not ensure_lorencia(bot):
-        return
+    while True:
+        # garante que estamos em Lorencia (início do ciclo)
+        if not ensure_lorencia(bot):
+            log("[FLOW] Não detectei Lorencia. Tentando novamente em 5s...")
+            time.sleep(5)
+            continue
 
-    log(f"HUD_BOX = {HUD_BOX}")
-    log_navigation_profile()
+        # lê level inicial
+        level = read_level_with_c()
+        log(f"[LEVEL] inicial: {level}")
 
-    level = get_initial_level_from_c()
-    log(f"[LEVEL] level filtrado (início): {level}")
+        # se não leu, vai cemitério por segurança
+        if level is None:
+            log("[FLOW] não consegui ler level -> indo cemitério por segurança.")
+            go_cemiterio_and_up_until_100_then_move_arena(bot)
+        elif 1 < level < 100:
+            log("[FLOW] 1 < level < 100 -> ir cemitério e upar até 100 -> arena.")
+            go_cemiterio_and_up_until_100_then_move_arena(bot)
+        elif level >= 100:
+            log("[FLOW] level >= 100 -> /move arena direto.")
+            ok_arena = send_move_arena_and_verify(bot)
+            if not ok_arena:
+                log("[FLOW] não confirmou arena -> ainda assim tentando fluxo arena após 5s.")
+                time.sleep(5)
+        else:
+            # level == 1: (se quiser encaixar fluxo Jin aqui depois, dá)
+            log("[FLOW] level == 1 -> indo cemitério por segurança.")
+            go_cemiterio_and_up_until_100_then_move_arena(bot)
 
-    if level is not None and 1 < level < 100:
-        log("[FLOW] level > 1 e < 100 -> ir para cemitério (ARROWS-VECT) e upar até 100 -> arena.")
-        go_cemiterio_and_up_until_100_then_move_arena(bot)
-        return
+        # se entrou em arena, roda o fluxo completo (distribui -> rota -> play -> lvl380 -> reset)
+        if ensure_arena(bot):
+            arena_flow(bot)
+        else:
+            log("[FLOW] não estou em Arena, voltando loop em 5s...")
+            time.sleep(5)
 
-    if level is None:
-        log("[FLOW] Não consegui ler level -> por segurança, indo cemitério.")
-        go_cemiterio_and_up_until_100_then_move_arena(bot)
-        return
-
-    if level >= 100:
-        log("[FLOW] level >= 100 -> enviando /move arena direto.")
-        pyautogui.press('c')
-        time.sleep(0.2)
-        pyautogui.press('enter')
-        time.sleep(CHAT_OPEN_WAIT_S)
-        pyautogui.write(MOVE_CMD, interval=0.02)
-        time.sleep(CHAT_AFTER_TYPE_WAIT_S)
-        pyautogui.press('enter')
-        time.sleep(AFTER_MOVE_WAIT_S)
-        ensure_arena(bot)
-        return
-
-    log("[FLOW] level == 1 -> verificar pontos antes de distribuir.")
-
-    valor = read_points_from_c(
-        HUD_BOX_VALOR,
-        open_delay=INITIAL_C_OPEN_DELAY,
-        read_delay=INITIAL_C_READ_DELAY,
-        close_delay=INITIAL_C_CLOSE_DELAY
-    )
-    if valor is None:
-        log("[WARN] Não foi possível ler o valor/pontos. Indo cemitério por segurança.")
-        go_cemiterio_and_up_until_100_then_move_arena(bot)
-        return
-
-    log(f"[PONTOS] valor lido: {valor}")
-
-    if valor == 0:
-        log("[FLOW] level==1 e pontos==0 -> ir direto pro cemitério.")
-        go_cemiterio_and_up_until_100_then_move_arena(bot)
-        return
-
-    BASE_JIN = (135, 126)
-    if not click_jin_by_offsets(HUD_BOX, base_xy=BASE_JIN):
-        not_found("Clique no Jin por offsets falhou")
-        return
-
-    log("Jin clicado (provável) por offsets.")
-
-    valor2 = read_points_from_c(
-        HUD_BOX_VALOR,
-        open_delay=INITIAL_C_OPEN_DELAY,
-        read_delay=INITIAL_C_READ_DELAY,
-        close_delay=INITIAL_C_CLOSE_DELAY
-    )
-    if valor2 is None:
-        log("[WARN] Não foi possível ler pontos após Jin. Indo cemitério.")
-        go_cemiterio_and_up_until_100_then_move_arena(bot)
-        return
-
-    log(f"[PONTOS] valor lido pós-Jin: {valor2}")
-
-    if valor2 == 0:
-        log("[FLOW] Pós-Jin: pontos==0 -> ir cemitério.")
-        go_cemiterio_and_up_until_100_then_move_arena(bot)
-        return
-
-    forca = int(round(valor2 * 0.55))
-    agilidade = int(round(valor2 * 0.25))
-    vitalidade = int(round(valor2 * 0.15))
-    energia = int(round(valor2 * 0.05))
-
-    log(f"Calculado -> Força: {forca}, Agilidade: {agilidade}, Vitalidade: {vitalidade}, Energia: {energia}")
-
-    cmds = [('/f', forca), ('/a', agilidade), ('/v', vitalidade), ('/e', energia)]
-    for cmd, val in cmds:
-        ok = apply_stat_with_validation(cmd, val, HUD_BOX_VALOR, retries=2)
-        if not ok:
-            log(f"[WARN] Não consegui confirmar {cmd}. Continuando...")
-
-    final_points = read_points_from_c(HUD_BOX_VALOR)
-    log(f"[FINAL] pontos após aplicar tudo: {final_points}")
-
-    log("[FLOW] Distribuição concluída -> ir cemitério (ARROWS-VECT) e upar até 100 -> arena.")
-    go_cemiterio_and_up_until_100_then_move_arena(bot)
-
+# =========================
+# ENTRYPOINT
+# =========================
 if __name__ == "__main__":
     try:
-        main()
+        main_loop()
     except KeyboardInterrupt:
         log("\nEncerrado pelo usuário (Ctrl+C).")
