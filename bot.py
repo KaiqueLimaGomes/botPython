@@ -4,8 +4,9 @@ import pyautogui
 import time
 import re
 from collections import Counter
-import random
 import math
+import random
+import threading
 
 import pytesseract
 import cv2
@@ -24,7 +25,6 @@ HUD_BOX = (202, 36, 59, 24)            # HUD X,Y (x,y,w,h)
 HUD_BOX_VALOR = (1394, 260, 39, 22)    # HUD do valor/pontos (x,y,w,h)
 LEVEL_BOX = (1316, 188, 31, 27)        # HUD do level (x,y,w,h)
 
-# Caminho por checkpoints até o cemitério (Lorencia)
 CEMITERIO_ROUTE = [
     (134, 139),
     (134, 150),
@@ -36,86 +36,69 @@ CEMITERIO_ROUTE = [
 ]
 TARGET_FUTURO_LOR = (133, 224)
 
-# Botão a clicar ao chegar no spot futuro (HUD)
 BUTTON_BOX = (223, 60, 26, 28)
 
-# Tempo máximo total para chegar no cemitério (2 minutos)
-FUTURO_TIMEOUT_S = 120
+FUTURO_TIMEOUT_S = 220
 
-# Verificar level a cada 1 minuto até >= 100
 LEVEL_CHECK_EVERY_S = 60
 TARGET_LEVEL = 100
 
-# Move arena
 MOVE_CMD = "/move arena"
 CHAT_OPEN_WAIT_S = 5
 CHAT_AFTER_TYPE_WAIT_S = 5
 AFTER_MOVE_WAIT_S = 10
 
-# Primeira abertura da janela (tecla C) pode ser mais lenta
 INITIAL_C_OPEN_DELAY = 1.10
 INITIAL_C_READ_DELAY = 0.80
 INITIAL_C_CLOSE_DELAY = 0.35
 
-# Movimento
-MAX_STEPS = 320
-MOVE_WAIT = 0.35
-CENTER_Y_RATIO = 0.55
-LINEAR_CLICK_SCALE = 0.72
-LINEAR_CLICK_JITTER = 32
-LINEAR_CLOSE_JITTER = 18
-AXIS_LOCK_CROSS_JITTER = 3
-RESCUE_CLICK_SCALE = 0.60
-TURN_PENALTY_DEG = 18
-MIN_CLICK_COMPONENT = 95
-ENFORCE_X_HARD_DY = 6
-ENFORCE_X_SOFT_BAND = 2
-
-# Limites coordenadas
+# =========================
+# LIMITES / OCR
+# =========================
 X_MIN, X_MAX = 0, 255
 Y_MIN, Y_MAX = 0, 255
-
-# OCR anti-salto
 MAX_JUMP = 30
 _last_good = None
 
-# Direções (mapeadas para seu client)
-DIR_CLICKS = {
-    "N":  (0,   200),
-    "S":  (0,  -200),
-    "E":  (240,   0),
-    "W":  (-240,  0),
-    "NE": (220,  80),
-    "NW": (-220, 80),
-    "SE": (220, -80),
-    "SW": (-220, -80),
-}
+# =========================
+# NAVEGAÇÃO POR SETAS (VETORIAL)
+# =========================
+AFTER_KEY_PAUSE_S = 2.5
+HOLD_S = 0.10
 
-DIRECTION_VECTORS = {
-    "N":  (0, -1),
-    "S":  (0, 1),
-    "E":  (1, 0),
-    "W":  (-1, 0),
-    "NE": (1, -1),
-    "NW": (-1, -1),
-    "SE": (1, 1),
-    "SW": (-1, 1),
-}
+STUCK_SAME_READS = 6
 
-# “Nudges” horizontais (mais suaves) para corrigir X sem sair muito do caminho
-NUDGE_E = (140, 0)
-NUDGE_W = (-140, 0)
+X_BAND_MIN = 133
+X_BAND_MAX = 135
 
-QUAD_PREFS = {
-    "NW": ["NW", "W", "N", "SW", "NE"],
-    "NE": ["NE", "E", "N", "SE", "NW"],
-    "SW": ["SW", "W", "S", "NW", "SE"],
-    "SE": ["SE", "E", "S", "NE", "SW"],
-    "W":  ["W", "NW", "SW", "N", "S"],
-    "E":  ["E", "NE", "SE", "N", "S"],
-    "N":  ["N", "NW", "NE", "W", "E"],
-    "S":  ["S", "SW", "SE", "W", "E"],
-}
+LANE_WEIGHT = 2.0
+WRONG_WAY_WEIGHT = 0.6
+
+KEY_UP = "up"
+KEY_DOWN = "down"
+KEY_LEFT = "left"
+KEY_RIGHT = "right"
+
+# Vetores medidos por você
+ACTIONS = [
+    {"name": "UP",          "keys": [KEY_UP],                "dx": -3, "dy": +3},
+    {"name": "DOWN",        "keys": [KEY_DOWN],              "dx": +3, "dy": -3},
+    {"name": "LEFT",        "keys": [KEY_LEFT],              "dx": -3, "dy": -3},
+    {"name": "RIGHT",       "keys": [KEY_RIGHT],             "dx": +3, "dy": +3},
+
+    {"name": "UP+LEFT",     "keys": [KEY_UP, KEY_LEFT],      "dx": -4, "dy":  0},
+    {"name": "UP+RIGHT",    "keys": [KEY_UP, KEY_RIGHT],     "dx":  0, "dy": +4},
+    {"name": "DOWN+RIGHT",  "keys": [KEY_DOWN, KEY_RIGHT],   "dx": +4, "dy":  0},
+    {"name": "DOWN+LEFT",   "keys": [KEY_DOWN, KEY_LEFT],    "dx":  0, "dy": -4},
+]
+
+# =========================
+# STUCK / ESCAPE CONFIG
+# =========================
+ESCAPE_TRIES = 6
+ESCAPE_TOPK = 4
+ESCAPE_RANDOM_EPS = 0.25
+ESCAPE_MAX_GLOBAL = 3
 
 # =========================
 # LOG
@@ -129,17 +112,47 @@ def not_found(label: str):
 # =========================
 # INPUT HELPERS
 # =========================
-def click_relative_safe(dx: int, dy: int):
-    w, h = pyautogui.size()
-    cx = w // 2
-    cy = int(h * CENTER_Y_RATIO)
-    pyautogui.click(cx + dx, cy + dy)
-
 def click_box_center(box):
     x, y, w, h = box
     px = x + (w // 2)
     py = y + (h // 2)
     pyautogui.click(px, py)
+
+def _key_down(k: str):
+    pyautogui.keyDown(k)
+
+def _key_up(k: str):
+    pyautogui.keyUp(k)
+
+def press_keys_simultaneous(keys, hold_s=HOLD_S, after_pause_s=AFTER_KEY_PAUSE_S):
+    """
+    Pressiona (keyDown) todas as teclas AO MESMO TEMPO (via threads),
+    segura por hold_s (mesmo tempo para todas),
+    e solta (keyUp) todas AO MESMO TEMPO.
+    """
+    keys = list(keys)
+
+    # DOWN simultâneo
+    threads = []
+    for k in keys:
+        t = threading.Thread(target=_key_down, args=(k,))
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+
+    time.sleep(max(0.01, hold_s))
+
+    # UP simultâneo
+    threads = []
+    for k in keys:
+        t = threading.Thread(target=_key_up, args=(k,))
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+
+    time.sleep(after_pause_s)
 
 # =========================
 # LUGAR (Lorencia / Arena)
@@ -232,9 +245,8 @@ def ocr_read_value_once(hud_box) -> int | None:
     except (ValueError, IndexError):
         return None
 
-def get_current_xy_filtered(hud_box, samples=6, delay=0.08) -> tuple[int, int] | None:
+def get_current_xy_filtered(hud_box, samples=7, delay=0.07) -> tuple[int, int] | None:
     global _last_good
-
     vals = []
     for _ in range(samples):
         v = ocr_read_coords_once(hud_box)
@@ -260,7 +272,7 @@ def get_current_xy_filtered(hud_box, samples=6, delay=0.08) -> tuple[int, int] |
     _last_good = candidate
     return candidate
 
-def get_current_value_filtered(hud_box, samples=5, delay=0.10) -> int | None:
+def get_current_value_filtered(hud_box, samples=6, delay=0.08) -> int | None:
     vals = []
     for _ in range(samples):
         v = ocr_read_value_once(hud_box)
@@ -285,274 +297,177 @@ def get_level_filtered(samples=7, delay=0.08) -> int | None:
     return Counter(vals).most_common(1)[0][0]
 
 # =========================
-# MOVIMENTO
+# PLANNER
 # =========================
-def dist(cur: tuple[int, int], target: tuple[int, int]) -> float:
-    cx, cy = cur
-    tx, ty = target
-    return math.hypot(tx - cx, ty - cy)
+def squared_dist(x1, y1, x2, y2):
+    dx = (x2 - x1)
+    dy = (y2 - y1)
+    return dx*dx + dy*dy
 
-def primary_quadrant_xy(cur, target, tol_x, tol_y) -> str | None:
+def lane_penalty(nx: int, enforce_lane: bool) -> float:
+    if not enforce_lane:
+        return 0.0
+    if X_BAND_MIN <= nx <= X_BAND_MAX:
+        return 0.0
+    if nx < X_BAND_MIN:
+        return (X_BAND_MIN - nx) * LANE_WEIGHT
+    return (nx - X_BAND_MAX) * LANE_WEIGHT
+
+def wrong_way_penalty(dx_to_target: int, dy_to_target: int, ax: int, ay: int) -> float:
+    pen = 0.0
+    if dx_to_target > 0 and ax < 0: pen += abs(ax) * WRONG_WAY_WEIGHT
+    if dx_to_target < 0 and ax > 0: pen += abs(ax) * WRONG_WAY_WEIGHT
+    if dy_to_target > 0 and ay < 0: pen += abs(ay) * WRONG_WAY_WEIGHT
+    if dy_to_target < 0 and ay > 0: pen += abs(ay) * WRONG_WAY_WEIGHT
+    return pen
+
+def score_action(cur, target, enforce_lane: bool, action) -> float:
     cx, cy = cur
     tx, ty = target
     dx = tx - cx
     dy = ty - cy
+    nx = cx + action["dx"]
+    ny = cy + action["dy"]
+    score = squared_dist(nx, ny, tx, ty)
+    score += lane_penalty(nx, enforce_lane)
+    score += wrong_way_penalty(dx, dy, action["dx"], action["dy"])
+    return score
 
-    if abs(dx) <= tol_x and abs(dy) <= tol_y:
-        return None
+def rank_actions(cur, target, enforce_lane: bool):
+    ranked = []
+    for a in ACTIONS:
+        ranked.append((score_action(cur, target, enforce_lane, a), a))
+    ranked.sort(key=lambda t: t[0])
+    return ranked
 
-    if dx < -tol_x and dy < -tol_y: return "NW"
-    if dx >  tol_x and dy < -tol_y: return "NE"
-    if dx < -tol_x and dy >  tol_y: return "SW"
-    if dx >  tol_x and dy >  tol_y: return "SE"
-    if dx < -tol_x: return "W"
-    if dx >  tol_x: return "E"
-    if dy < -tol_y: return "N"
-    if dy >  tol_y: return "S"
-    return None
-
-def click_any_direction(strength=RESCUE_CLICK_SCALE):
-    name = random.choice(list(DIR_CLICKS.keys()))
-    click_direction_linear(name, strength=strength, jitter=LINEAR_CLICK_JITTER)
-    time.sleep(0.45)
+def choose_best_action(cur, target, enforce_lane: bool):
+    return rank_actions(cur, target, enforce_lane)[0][1]
 
 def log_navigation_profile():
-    log(
-        "[NAV] perfil linear ativo -> "
-        f"scale={LINEAR_CLICK_SCALE}, jitter={LINEAR_CLICK_JITTER}, close_jitter={LINEAR_CLOSE_JITTER}, "
-        f"axis_cross_jitter={AXIS_LOCK_CROSS_JITTER}, rescue_scale={RESCUE_CLICK_SCALE}, "
-        f"turn_penalty_deg={TURN_PENALTY_DEG}, min_component={MIN_CLICK_COMPONENT}, "
-        f"enforce_x_hard_dy={ENFORCE_X_HARD_DY}, enforce_x_soft_band={ENFORCE_X_SOFT_BAND}"
-    )
+    log("[NAV] MODO SETAS (VETORIAL) ativo:")
+    log(f"      after_key_pause={AFTER_KEY_PAUSE_S}s | hold={HOLD_S}s | stuck_reads={STUCK_SAME_READS}")
+    log(f"      X_BAND (coluna 134): {X_BAND_MIN}..{X_BAND_MAX} | lane_weight={LANE_WEIGHT} | wrong_way_weight={WRONG_WAY_WEIGHT}")
+    log("      ações:")
+    for a in ACTIONS:
+        log(f"        - {a['name']:>11} keys={a['keys']} delta=({a['dx']:+d},{a['dy']:+d})")
 
-def click_direction_linear(direction: str, strength=LINEAR_CLICK_SCALE, jitter=LINEAR_CLICK_JITTER, axis_lock: str | None = None, min_component=MIN_CLICK_COMPONENT):
-    """
-    Clica em um quadrado pequeno à frente do personagem para reduzir trajetos em arco.
-    Isso deixa o movimento mais linear e com menos risco de bater em obstáculo lateral.
-    """
-    dx_base, dy_base = DIR_CLICKS[direction]
+# =========================
+# ESCAPE WHEN STUCK
+# =========================
+def escape_when_stuck(hud_box, target_xy, enforce_lane: bool) -> bool:
+    cur0 = get_current_xy_filtered(hud_box, samples=7, delay=0.07)
+    if not cur0:
+        return False
 
-    if axis_lock == "X":
-        # Em linha reta no eixo X: quase sem variação vertical.
-        dx = int(dx_base * strength) + random.randint(-jitter, jitter)
-        dy = int(dy_base * strength) + random.randint(-AXIS_LOCK_CROSS_JITTER, AXIS_LOCK_CROSS_JITTER)
-    elif axis_lock == "Y":
-        # Em linha reta no eixo Y: quase sem variação horizontal.
-        dx = int(dx_base * strength) + random.randint(-AXIS_LOCK_CROSS_JITTER, AXIS_LOCK_CROSS_JITTER)
-        dy = int(dy_base * strength) + random.randint(-jitter, jitter)
-    else:
-        dx = int(dx_base * strength) + random.randint(-jitter, jitter)
-        dy = int(dy_base * strength) + random.randint(-jitter, jitter)
+    ranked = rank_actions(cur0, target_xy, enforce_lane)
+    top = [a for _, a in ranked[:ESCAPE_TOPK]]
 
-    if direction in ("E", "W") and abs(dx) < min_component:
-        dx = min_component if dx >= 0 else -min_component
-    if direction in ("N", "S") and abs(dy) < min_component:
-        dy = min_component if dy >= 0 else -min_component
+    pool = top[:] + [a for _, a in ranked[ESCAPE_TOPK:]]
+    seen = set()
+    pool2 = []
+    for a in pool:
+        if a["name"] not in seen:
+            pool2.append(a)
+            seen.add(a["name"])
+    pool = pool2
 
-    lock_msg = f" axis_lock={axis_lock}" if axis_lock else ""
-    log(f"[DIR] {direction} -> click linear ({dx},{dy}){lock_msg}")
-    click_relative_safe(dx, dy)
+    log(f"[ESCAPE] Tentando destravar: tries={ESCAPE_TRIES} topK={ESCAPE_TOPK}")
 
-def choose_linear_direction(dx: int, dy: int, last_direction: str | None = None) -> str:
-    """Escolhe a direção que mais reduz a distância angular até o alvo, penalizando curvas bruscas."""
-    target_len = math.hypot(dx, dy)
-    if target_len == 0:
-        return "E"
+    for i in range(1, ESCAPE_TRIES + 1):
+        if random.random() < ESCAPE_RANDOM_EPS:
+            a = random.choice(top)
+            why = "random_topK"
+        else:
+            a = pool[(i - 1) % len(pool)]
+            why = "cycle_pool"
 
-    best_direction = "E"
-    best_score = float("inf")
+        log(f"[ESCAPE] {i}/{ESCAPE_TRIES} -> {a['name']} ({why}) keys={a['keys']} delta=({a['dx']},{a['dy']})")
+        press_keys_simultaneous(a["keys"], hold_s=HOLD_S)
 
-    for direction, (vx, vy) in DIRECTION_VECTORS.items():
-        vec_len = math.hypot(vx, vy)
-        cos_theta = ((dx * vx) + (dy * vy)) / (target_len * vec_len)
-        cos_theta = max(-1.0, min(1.0, cos_theta))
-        score = math.degrees(math.acos(cos_theta))
+        cur1 = get_current_xy_filtered(hud_box, samples=7, delay=0.07)
+        if not cur1:
+            continue
 
-        if last_direction and direction != last_direction:
-            score += TURN_PENALTY_DEG
+        if cur1 != cur0:
+            log(f"[ESCAPE] Sucesso: moveu de {cur0} -> {cur1}")
+            return True
 
-        if score < best_score:
-            best_score = score
-            best_direction = direction
+    log("[ESCAPE] Falhou: não conseguiu sair do lugar.")
+    return False
 
-    return best_direction
-
-def click_towards_target_rescue(dx: int, dy: int):
-    """Rescue direcionado: usa o vetor do alvo com força maior para tentar destravar."""
-    direction = choose_linear_direction(dx, dy, last_direction=None)
-    log(f"[RESCUE] direcional -> {direction}")
-    click_direction_linear(direction, strength=0.92, jitter=24, min_component=130)
-    time.sleep(0.45)
-
-def nudge_to_fix_x(cur, target_x):
-    """Pequeno ajuste lateral para forçar X ir pro valor exato (ex: manter em 134)."""
-    cx, _ = cur
-    if cx < target_x:
-        dx, dy = NUDGE_E
-        log(f"[NUDGE] corrigindo X: {cx} -> {target_x} (E {dx},{dy})")
-        click_relative_safe(dx, dy)
-    elif cx > target_x:
-        dx, dy = NUDGE_W
-        log(f"[NUDGE] corrigindo X: {cx} -> {target_x} (W {dx},{dy})")
-        click_relative_safe(dx, dy)
-    time.sleep(MOVE_WAIT)
-
-def walk_to(hud_box, target_xy: tuple[int, int], label="ALVO",
-            tol=3, timeout_s=35, tol_x=None, tol_y=None, enforce_x=False) -> bool:
-    """
-    tol_x/tol_y: tolerâncias separadas.
-    enforce_x=True: se estiver fora do X, PRIORIZA corrigir X (com nudges) antes de andar no Y.
-    """
-    if tol_x is None: tol_x = tol
-    if tol_y is None: tol_y = tol
-
-    log(f"Indo até {label} {target_xy} (tol_x={tol_x}, tol_y={tol_y}, timeout={timeout_s}s)...")
-    start_t = time.time()
+# =========================
+# WALK (VETORIAL)
+# =========================
+def walk_to_arrows(hud_box, target_xy: tuple[int, int], label="ALVO",
+                   tol_x=1, tol_y=2,
+                   timeout_s=90, enforce_x_lane=False) -> bool:
+    log(f"Indo até {label} {target_xy} (ARROWS-VECT) tol_x={tol_x} tol_y={tol_y} timeout={timeout_s}s lane={enforce_x_lane}")
+    start = time.time()
 
     last_xy = None
-    stuck_count = 0
+    same_reads = 0
     ocr_fail = 0
+    step = 0
+    escape_cycles = 0
 
-    last_dist = None
-    worse_streak = 0
-    last_direction = None
-
-    for step in range(1, MAX_STEPS + 1):
-        if time.time() - start_t > timeout_s:
-            log(f"[TIMEOUT] walk_to {label} excedeu {timeout_s}s")
+    while True:
+        if time.time() - start > timeout_s:
+            log(f"[TIMEOUT] walk_to_arrows {label} excedeu {timeout_s}s")
             return False
 
-        cur = get_current_xy_filtered(hud_box, samples=6, delay=0.08)
+        cur = get_current_xy_filtered(hud_box, samples=7, delay=0.07)
         if not cur:
             ocr_fail += 1
             log(f"[WARN] OCR não leu coordenadas... ({ocr_fail})")
+            time.sleep(0.2)
             if ocr_fail >= 3:
-                log("[ACTION] OCR falhando -> emergência")
-                click_any_direction()
+                log("[ACTION] OCR falhando -> passo reset (DOWN+LEFT)")
+                press_keys_simultaneous([KEY_DOWN, KEY_LEFT], hold_s=HOLD_S)
                 ocr_fail = 0
-            time.sleep(0.25)
             continue
 
         ocr_fail = 0
-        d = dist(cur, target_xy)
         cx, cy = cur
         tx, ty = target_xy
         dx = tx - cx
         dy = ty - cy
+        step += 1
 
-        log(f"[step {step}/{MAX_STEPS}] [XY] atual=({cx},{cy}) alvo=({tx},{ty}) dist={d:.2f} (dx={dx}, dy={dy})")
+        log(f"[step {step}] [XY] atual=({cx},{cy}) alvo=({tx},{ty}) dx={dx} dy={dy}")
 
         if abs(dx) <= tol_x and abs(dy) <= tol_y:
             log(f"Chegou em {label} (<=tol_x={tol_x}, tol_y={tol_y}).")
             return True
 
-        # detecta stuck
         if last_xy is not None and cur == last_xy:
-            stuck_count += 1
+            same_reads += 1
         else:
-            stuck_count = 0
+            same_reads = 0
         last_xy = cur
 
-        # se travou, tenta resolver de forma "inteligente" (corrigir X primeiro se necessário)
-        if stuck_count >= 3:
-            log(f"[STUCK] {stuck_count}x -> rescue")
-            if enforce_x and abs(dx) > 0:
-                nudge_to_fix_x(cur, tx)
-            else:
-                click_towards_target_rescue(dx, dy)
-            stuck_count = 0
-            continue
-
-        # Se a ideia é "manter em X=134", NÃO fique preso em nudge quando ainda falta muito no Y.
-        if enforce_x and abs(dx) > tol_x:
-            if abs(dy) <= ENFORCE_X_HARD_DY or abs(dx) > ENFORCE_X_SOFT_BAND:
-                nudge_to_fix_x(cur, tx)
+        if same_reads >= STUCK_SAME_READS:
+            log(f"[STUCK] {same_reads} leituras iguais -> ESCAPE (tentar outras direções)")
+            ok = escape_when_stuck(hud_box, target_xy, enforce_x_lane)
+            same_reads = 0
+            if ok:
+                escape_cycles = 0
                 continue
-
-        if last_dist is not None and d > last_dist + 0.5:
-            worse_streak += 1
-        else:
-            worse_streak = 0
-        last_dist = d
-
-        quad = primary_quadrant_xy(cur, target_xy, tol_x=tol_x, tol_y=tol_y)
-        if quad is None:
-            time.sleep(0.18)
+            escape_cycles += 1
+            if escape_cycles >= ESCAPE_MAX_GLOBAL:
+                log("[STUCK] muitas tentativas de escape sem sucesso -> aborta este alvo")
+                return False
             continue
 
-        axis_lock = None
-        if enforce_x and abs(dy) > ENFORCE_X_HARD_DY:
-            # Em checkpoints de X fixo, enquanto estiver longe no Y, prioriza avanço no Y.
-            direction = "S" if dy > 0 else "N"
-            axis_lock = "Y"
-        elif abs(dy) <= tol_y and abs(dx) > tol_x:
-            # Se já está no Y do destino, anda reto apenas no X (linha horizontal curta).
-            direction = "E" if dx > 0 else "W"
-            axis_lock = "X"
-        elif abs(dx) <= tol_x and abs(dy) > tol_y:
-            # Se já está no X do destino, anda reto apenas no Y (linha vertical curta).
-            direction = "S" if dy > 0 else "N"
-            axis_lock = "Y"
-        else:
-            direction = choose_linear_direction(dx, dy, last_direction=last_direction)
-            if worse_streak >= 2 and direction == last_direction and quad in QUAD_PREFS:
-                # fallback: tenta segunda melhor opção do quadrante para destravar sem perder linearidade.
-                direction = QUAD_PREFS[quad][1]
-                log(f"[ADAPT] piorando {worse_streak}x -> fallback {direction}")
-
-        dynamic_jitter = LINEAR_CLICK_JITTER
-        dynamic_strength = LINEAR_CLICK_SCALE
-        dynamic_min_component = MIN_CLICK_COMPONENT
-
-        if abs(dx) <= 6 or abs(dy) <= 6:
-            dynamic_jitter = LINEAR_CLOSE_JITTER
-
-        if worse_streak >= 2:
-            # Se não está aproximando, aumenta alcance do clique para sair da inércia.
-            dynamic_strength = 0.85
-            dynamic_min_component = 120
-
-        click_direction_linear(
-            direction,
-            strength=dynamic_strength,
-            jitter=dynamic_jitter,
-            axis_lock=axis_lock,
-            min_component=dynamic_min_component,
-        )
-        last_direction = direction
-        time.sleep(MOVE_WAIT)
-
-    not_found(f"não chegou em {label}")
-    return False
-
-def go_exact(hud_box, xy: tuple[int,int], label: str) -> bool:
-    if not walk_to(hud_box, xy, label=f"{label}_FAST", tol=3, timeout_s=25):
-        return False
-    if walk_to(hud_box, xy, label=f"{label}_TIGHT", tol=1, timeout_s=12):
-        return True
-    log(f"[EXACT] não conseguiu tol=1 em {label}, mas está próximo. Continuando mesmo assim.")
-    return True
+        a = choose_best_action(cur, target_xy, enforce_x_lane)
+        log(f"[MOVE] {a['name']} keys={a['keys']} delta=({a['dx']},{a['dy']})")
+        press_keys_simultaneous(a["keys"], hold_s=HOLD_S)
 
 # =========================
-# ROTA CHECKPOINTS (CEMITÉRIO) - FIXA X=134 nos CPs que pedem isso
+# ROTA CHECKPOINTS
 # =========================
-def walk_route_with_checkpoints(hud_box, checkpoints, total_timeout_s=120) -> bool:
-    """
-    Rota com timeout GLOBAL.
-    1) tenta a rota mais curta (reta) até o último checkpoint.
-    2) se falhar por obstáculo, cai para checkpoints com retry/rescue.
-    """
-    log(f"[ROUTE] Iniciando rota com {len(checkpoints)} checkpoints. Timeout total={total_timeout_s}s")
+def walk_route_with_checkpoints_arrows(hud_box, checkpoints, total_timeout_s=220) -> bool:
+    log(f"[ROUTE] (ARROWS-VECT) Iniciando rota com {len(checkpoints)} checkpoints. Timeout total={total_timeout_s}s")
     start = time.time()
-
-    final_target = checkpoints[-1]
-    direct_timeout = max(18, int(total_timeout_s * 0.35))
-    log(f"[ROUTE][SHORT] tentando rota direta até {final_target} (timeout={direct_timeout}s)")
-    if walk_to(hud_box, final_target, label="DIRECT_FINAL", timeout_s=direct_timeout, tol_x=2, tol_y=2):
-        log("[ROUTE][SHORT] rota direta concluída com sucesso.")
-        return True
-
-    log("[ROUTE][SHORT] rota direta falhou -> fallback para checkpoints.")
 
     for idx, cp in enumerate(checkpoints, 1):
         remaining = total_timeout_s - (time.time() - start)
@@ -560,63 +475,45 @@ def walk_route_with_checkpoints(hud_box, checkpoints, total_timeout_s=120) -> bo
             log("[ROUTE][TIMEOUT] acabou o tempo total da rota")
             return False
 
-        cur = get_current_xy_filtered(hud_box, samples=6, delay=0.08)
-        d = dist(cur, cp) if cur else 60.0
-        wanted = max(14, int(d * 0.45))
-        slice_timeout = min(int(remaining * 0.90), wanted)
-        slice_timeout = max(18, slice_timeout)
+        base = 80 if idx <= 2 else 65
+        slice_timeout = max(base, int(remaining / (len(checkpoints) - idx + 1)))
 
-        # >>> REGRA: se checkpoint quer X=134, NÃO ACEITA “132 dentro do tol=3”
-        enforce_x = (cp[0] == 134)
-        tol_x = 1 if enforce_x else 3
-        tol_y = 3
+        enforce_lane = (cp[0] == 134)
+        tol_x = 1 if enforce_lane else 2
+        tol_y = 2
 
-        log(f"[ROUTE] Checkpoint {idx}/{len(checkpoints)} -> {cp} dist~{d:.2f} timeout={slice_timeout}s enforce_x={enforce_x}")
+        log(f"[ROUTE] CP{idx}/{len(checkpoints)} -> {cp} timeout={slice_timeout}s lane={enforce_lane}")
 
-        ok = walk_to(
-            hud_box, cp,
+        ok = walk_to_arrows(
+            hud_box,
+            cp,
             label=f"CP{idx}",
+            tol_x=tol_x,
+            tol_y=tol_y,
             timeout_s=slice_timeout,
-            tol_x=tol_x, tol_y=tol_y,
-            enforce_x=enforce_x
+            enforce_x_lane=enforce_lane
         )
-        if ok:
-            continue
-
-        log(f"[ROUTE][RETRY] Falhou CP{idx}. Rescue e retry...")
-        # rescue mais direcionado: se cp.x==134, tenta “puxar” X pra 134 antes
-        if enforce_x and cur:
-            nudge_to_fix_x(cur, cp[0])
-        click_any_direction(strength=0.55)
-        click_any_direction(strength=0.55)
-
-        remaining2 = total_timeout_s - (time.time() - start)
-        if remaining2 <= 0:
-            log("[ROUTE][TIMEOUT] sem tempo para retry")
-            return False
-
-        retry_timeout = min(35, int(remaining2 * 0.55))
-        retry_timeout = max(20, retry_timeout)
-
-        ok2 = walk_to(
-            hud_box, cp,
-            label=f"CP{idx}_RETRY",
-            timeout_s=retry_timeout,
-            tol_x=tol_x, tol_y=tol_y,
-            enforce_x=enforce_x
-        )
-        if not ok2:
+        if not ok:
             log(f"[ROUTE] Falhou no checkpoint {idx}: {cp}")
             return False
 
-    log("[ROUTE] Rota concluída com sucesso.")
+    log("[ROUTE] (ARROWS-VECT) Rota concluída com sucesso.")
     return True
 
 # =========================
-# CLIQUE NO JIN (OFFSETS)
+# JIN (clique offsets, mantido)
 # =========================
+def click_relative_safe(dx: int, dy: int, center_y_ratio=0.55):
+    w, h = pyautogui.size()
+    cx = w // 2
+    cy = int(h * center_y_ratio)
+    pyautogui.click(cx + dx, cy + dy)
+
+def go_exact_arrows(hud_box, xy: tuple[int,int], label: str) -> bool:
+    return walk_to_arrows(hud_box, xy, label=label, tol_x=1, tol_y=1, timeout_s=120, enforce_x_lane=False)
+
 def click_jin_by_offsets(hud_box, base_xy=(135,126)) -> bool:
-    if not go_exact(hud_box, base_xy, "BASE_JIN"):
+    if not go_exact_arrows(hud_box, base_xy, "BASE_JIN"):
         return False
 
     offsets = [
@@ -634,9 +531,7 @@ def click_jin_by_offsets(hud_box, base_xy=(135,126)) -> bool:
     log("[JIN] Tentando cliques por offsets (sem mover)...")
 
     for i, (dx, dy) in enumerate(offsets, 1):
-        walk_to(hud_box, base_xy, label="RET_BASE", tol=3, timeout_s=12)
-
-        before = get_current_xy_filtered(hud_box, samples=6, delay=0.08)
+        before = get_current_xy_filtered(hud_box, samples=7, delay=0.07)
         if not before:
             log("[JIN] OCR falhou antes do clique, tentando próximo...")
             continue
@@ -645,7 +540,7 @@ def click_jin_by_offsets(hud_box, base_xy=(135,126)) -> bool:
         click_relative_safe(dx, dy)
         time.sleep(0.60)
 
-        after = get_current_xy_filtered(hud_box, samples=6, delay=0.08)
+        after = get_current_xy_filtered(hud_box, samples=7, delay=0.07)
         if not after:
             log("[JIN] OCR falhou após clique, tentando próximo...")
             continue
@@ -662,12 +557,11 @@ def click_jin_by_offsets(hud_box, base_xy=(135,126)) -> bool:
     return False
 
 # =========================
-# CHAT COMMAND + VALIDACAO HUD
+# STATS / CHAT
 # =========================
 def get_initial_level_from_c(open_delay=INITIAL_C_OPEN_DELAY,
                              read_delay=INITIAL_C_READ_DELAY,
                              close_delay=INITIAL_C_CLOSE_DELAY) -> int | None:
-    """Primeira leitura de level com janela aberta mais tempo para evitar leitura vazia."""
     pyautogui.press('c')
     time.sleep(open_delay)
     time.sleep(read_delay)
@@ -712,7 +606,7 @@ def apply_stat_with_validation(cmd: str, value: int, hud_box_valor,
         log(f"[VAL] depois de {cmd} (tentativa {attempt}/{retries}): pontos={after}")
 
         if after is None or before is None:
-            log("[VAL] OCR do valor falhou em alguma leitura -> tentando novamente")
+            log("[VAL] OCR do valor falhou -> tentando novamente")
             time.sleep(0.3)
             continue
 
@@ -730,9 +624,9 @@ def apply_stat_with_validation(cmd: str, value: int, hud_box_valor,
 # UP: CEMITÉRIO -> LVL 100 -> MOVE ARENA
 # =========================
 def go_cemiterio_and_up_until_100_then_move_arena(bot: DesktopBot):
-    log(f"[UP] Indo para CEMITÉRIO via checkpoints (timeout total {FUTURO_TIMEOUT_S}s)...")
+    log(f"[UP] Indo para CEMITÉRIO via checkpoints (ARROWS-VECT) timeout total {FUTURO_TIMEOUT_S}s...")
 
-    ok = walk_route_with_checkpoints(
+    ok = walk_route_with_checkpoints_arrows(
         HUD_BOX,
         CEMITERIO_ROUTE,
         total_timeout_s=FUTURO_TIMEOUT_S
@@ -788,26 +682,26 @@ def main():
 
     bot = DesktopBot()
 
-    # 1) Verificar Lorencia primeiro
     if not ensure_lorencia(bot):
         return
 
     log(f"HUD_BOX = {HUD_BOX}")
     log_navigation_profile()
 
-    # 2) Ler level
     level = get_initial_level_from_c()
     log(f"[LEVEL] level filtrado (início): {level}")
 
-    # 3) Lógica:
     if level is not None and 1 < level < 100:
-        log("[FLOW] level > 1 e < 100 -> ir para cemitério (checkpoints) e upar até 100 -> arena.")
+        log("[FLOW] level > 1 e < 100 -> ir para cemitério (ARROWS-VECT) e upar até 100 -> arena.")
         go_cemiterio_and_up_until_100_then_move_arena(bot)
         return
 
     if level is None:
-        log("[FLOW] Não consegui ler level -> seguindo para Jin.")
-    elif level >= 100:
+        log("[FLOW] Não consegui ler level -> por segurança, indo cemitério.")
+        go_cemiterio_and_up_until_100_then_move_arena(bot)
+        return
+
+    if level >= 100:
         log("[FLOW] level >= 100 -> enviando /move arena direto.")
         pyautogui.press('c')
         time.sleep(0.2)
@@ -819,12 +713,9 @@ def main():
         time.sleep(AFTER_MOVE_WAIT_S)
         ensure_arena(bot)
         return
-    else:
-        log("[FLOW] level == 1 -> verificar pontos antes de distribuir.")
 
-    # =========================
-    # FLUXO LEVEL == 1 => VERIFICA PONTOS
-    # =========================
+    log("[FLOW] level == 1 -> verificar pontos antes de distribuir.")
+
     valor = read_points_from_c(
         HUD_BOX_VALOR,
         open_delay=INITIAL_C_OPEN_DELAY,
@@ -839,15 +730,8 @@ def main():
     log(f"[PONTOS] valor lido: {valor}")
 
     if valor == 0:
-        log("[FLOW] level==1 e pontos==0 -> pular Jin/distribuição e ir direto pro cemitério.")
+        log("[FLOW] level==1 e pontos==0 -> ir direto pro cemitério.")
         go_cemiterio_and_up_until_100_then_move_arena(bot)
-        return
-
-    # =========================
-    # FLUXO JIN + DISTRIBUIR
-    # =========================
-    TARGET_FONTE = (136, 127)
-    if not walk_to(HUD_BOX, TARGET_FONTE, label="FONTE", tol=3, timeout_s=35):
         return
 
     BASE_JIN = (135, 126)
@@ -857,49 +741,41 @@ def main():
 
     log("Jin clicado (provável) por offsets.")
 
-    # recalcula pontos (garante leitura pós-Jin)
-    valor = read_points_from_c(
+    valor2 = read_points_from_c(
         HUD_BOX_VALOR,
         open_delay=INITIAL_C_OPEN_DELAY,
         read_delay=INITIAL_C_READ_DELAY,
         close_delay=INITIAL_C_CLOSE_DELAY
     )
-    if valor is None:
+    if valor2 is None:
         log("[WARN] Não foi possível ler pontos após Jin. Indo cemitério.")
         go_cemiterio_and_up_until_100_then_move_arena(bot)
         return
 
-    log(f"[PONTOS] valor lido pós-Jin: {valor}")
+    log(f"[PONTOS] valor lido pós-Jin: {valor2}")
 
-    if valor == 0:
-        log("[FLOW] Pós-Jin: pontos==0 -> pular distribuição e ir cemitério.")
+    if valor2 == 0:
+        log("[FLOW] Pós-Jin: pontos==0 -> ir cemitério.")
         go_cemiterio_and_up_until_100_then_move_arena(bot)
         return
 
-    forca = int(round(valor * 0.55))
-    agilidade = int(round(valor * 0.25))
-    vitalidade = int(round(valor * 0.15))
-    energia = int(round(valor * 0.05))
+    forca = int(round(valor2 * 0.55))
+    agilidade = int(round(valor2 * 0.25))
+    vitalidade = int(round(valor2 * 0.15))
+    energia = int(round(valor2 * 0.05))
 
     log(f"Calculado -> Força: {forca}, Agilidade: {agilidade}, Vitalidade: {vitalidade}, Energia: {energia}")
 
     cmds = [('/f', forca), ('/a', agilidade), ('/v', vitalidade), ('/e', energia)]
     for cmd, val in cmds:
-        ok = apply_stat_with_validation(
-            cmd, val, HUD_BOX_VALOR,
-            retries=2,
-            open_delay=0.35,
-            type_delay=0.15,
-            send_delay=0.35
-        )
+        ok = apply_stat_with_validation(cmd, val, HUD_BOX_VALOR, retries=2)
         if not ok:
-            log(f"[WARN] Não consegui confirmar {cmd}. Continuando mesmo assim...")
+            log(f"[WARN] Não consegui confirmar {cmd}. Continuando...")
 
     final_points = read_points_from_c(HUD_BOX_VALOR)
     log(f"[FINAL] pontos após aplicar tudo: {final_points}")
 
-    # Depois de distribuir, vai cemitério e upa até 100
-    log("[FLOW] Distribuição concluída -> ir cemitério (checkpoints) e upar até 100 -> arena.")
+    log("[FLOW] Distribuição concluída -> ir cemitério (ARROWS-VECT) e upar até 100 -> arena.")
     go_cemiterio_and_up_until_100_then_move_arena(bot)
 
 if __name__ == "__main__":
