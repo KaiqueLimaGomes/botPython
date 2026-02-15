@@ -60,6 +60,7 @@ LINEAR_CLICK_SCALE = 0.62
 LINEAR_CLICK_JITTER = 36
 LINEAR_CLOSE_JITTER = 22
 RESCUE_CLICK_SCALE = 0.45
+TURN_PENALTY_DEG = 18
 
 # Limites coordenadas
 X_MIN, X_MAX = 0, 255
@@ -79,6 +80,17 @@ DIR_CLICKS = {
     "NW": (-220, 80),
     "SE": (220, -80),
     "SW": (-220, -80),
+}
+
+DIRECTION_VECTORS = {
+    "N":  (0, -1),
+    "S":  (0, 1),
+    "E":  (1, 0),
+    "W":  (-1, 0),
+    "NE": (1, -1),
+    "NW": (-1, -1),
+    "SE": (1, 1),
+    "SW": (-1, 1),
 }
 
 # “Nudges” horizontais (mais suaves) para corrigir X sem sair muito do caminho
@@ -299,7 +311,7 @@ def log_navigation_profile():
     log(
         "[NAV] perfil linear ativo -> "
         f"scale={LINEAR_CLICK_SCALE}, jitter={LINEAR_CLICK_JITTER}, close_jitter={LINEAR_CLOSE_JITTER}, "
-        f"rescue_scale={RESCUE_CLICK_SCALE}"
+        f"rescue_scale={RESCUE_CLICK_SCALE}, turn_penalty_deg={TURN_PENALTY_DEG}"
     )
 
 def click_direction_linear(direction: str, strength=LINEAR_CLICK_SCALE, jitter=LINEAR_CLICK_JITTER):
@@ -313,6 +325,30 @@ def click_direction_linear(direction: str, strength=LINEAR_CLICK_SCALE, jitter=L
 
     log(f"[DIR] {direction} -> click linear ({dx},{dy})")
     click_relative_safe(dx, dy)
+
+def choose_linear_direction(dx: int, dy: int, last_direction: str | None = None) -> str:
+    """Escolhe a direção que mais reduz a distância angular até o alvo, penalizando curvas bruscas."""
+    target_len = math.hypot(dx, dy)
+    if target_len == 0:
+        return "E"
+
+    best_direction = "E"
+    best_score = float("inf")
+
+    for direction, (vx, vy) in DIRECTION_VECTORS.items():
+        vec_len = math.hypot(vx, vy)
+        cos_theta = ((dx * vx) + (dy * vy)) / (target_len * vec_len)
+        cos_theta = max(-1.0, min(1.0, cos_theta))
+        score = math.degrees(math.acos(cos_theta))
+
+        if last_direction and direction != last_direction:
+            score += TURN_PENALTY_DEG
+
+        if score < best_score:
+            best_score = score
+            best_direction = direction
+
+    return best_direction
 
 def nudge_to_fix_x(cur, target_x):
     """Pequeno ajuste lateral para forçar X ir pro valor exato (ex: manter em 134)."""
@@ -345,6 +381,7 @@ def walk_to(hud_box, target_xy: tuple[int, int], label="ALVO",
 
     last_dist = None
     worse_streak = 0
+    last_direction = None
 
     for step in range(1, MAX_STEPS + 1):
         if time.time() - start_t > timeout_s:
@@ -408,19 +445,18 @@ def walk_to(hud_box, target_xy: tuple[int, int], label="ALVO",
             time.sleep(0.18)
             continue
 
-        prefs = QUAD_PREFS.get(quad, [quad])
-        if worse_streak >= 2 and len(prefs) >= 3:
-            prefs = prefs[1:] + prefs[:1]
-            log(f"[ADAPT] piorando {worse_streak}x -> prioridade: {prefs}")
-
-        direction = prefs[0]
+        direction = choose_linear_direction(dx, dy, last_direction=last_direction)
+        if worse_streak >= 2 and direction == last_direction and quad in QUAD_PREFS:
+            # fallback: tenta segunda melhor opção do quadrante para destravar sem perder linearidade.
+            direction = QUAD_PREFS[quad][1]
+            log(f"[ADAPT] piorando {worse_streak}x -> fallback {direction}")
 
         dynamic_jitter = LINEAR_CLICK_JITTER
         if abs(dx) <= 6 or abs(dy) <= 6:
-            # Aproximação fina: quadrado ainda menor para evitar zigue-zague.
             dynamic_jitter = LINEAR_CLOSE_JITTER
 
         click_direction_linear(direction, jitter=dynamic_jitter)
+        last_direction = direction
         time.sleep(MOVE_WAIT)
 
     not_found(f"não chegou em {label}")
@@ -440,11 +476,20 @@ def go_exact(hud_box, xy: tuple[int,int], label: str) -> bool:
 def walk_route_with_checkpoints(hud_box, checkpoints, total_timeout_s=120) -> bool:
     """
     Rota com timeout GLOBAL.
-    - Para checkpoints com X=134: exige manter X exato (tol_x=0) e corrige X prioritariamente.
-    - Retry com rescue.
+    1) tenta a rota mais curta (reta) até o último checkpoint.
+    2) se falhar por obstáculo, cai para checkpoints com retry/rescue.
     """
     log(f"[ROUTE] Iniciando rota com {len(checkpoints)} checkpoints. Timeout total={total_timeout_s}s")
     start = time.time()
+
+    final_target = checkpoints[-1]
+    direct_timeout = max(18, int(total_timeout_s * 0.35))
+    log(f"[ROUTE][SHORT] tentando rota direta até {final_target} (timeout={direct_timeout}s)")
+    if walk_to(hud_box, final_target, label="DIRECT_FINAL", timeout_s=direct_timeout, tol_x=2, tol_y=2):
+        log("[ROUTE][SHORT] rota direta concluída com sucesso.")
+        return True
+
+    log("[ROUTE][SHORT] rota direta falhou -> fallback para checkpoints.")
 
     for idx, cp in enumerate(checkpoints, 1):
         remaining = total_timeout_s - (time.time() - start)

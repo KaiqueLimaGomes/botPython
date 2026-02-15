@@ -22,3 +22,13 @@ python -m py_compile bot.py
 ```
 
 Ao iniciar, o bot agora imprime o perfil de navegação ativo no log (`[NAV] ...`) para você confirmar os valores carregados.
+
+
+## Rota mais curta (novo comportamento)
+
+Agora o bot tenta primeiro uma rota direta (reta) até o destino final.
+Se houver bloqueio/obstáculo, ele cai automaticamente para a rota por checkpoints.
+
+Esse fluxo fica nos logs como:
+- `[ROUTE][SHORT] tentando rota direta ...`
+- `[ROUTE][SHORT] rota direta falhou -> fallback para checkpoints.`
