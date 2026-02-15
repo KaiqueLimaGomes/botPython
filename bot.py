@@ -51,7 +51,7 @@ ARENA_ROUTE = [
 TARGET_ARENA_FINAL = (29, 75)
 
 # Botão HUD
-Btn_play = (223, 60, 26, 28)  # renomeado (antes BUTTON_BOX)
+Btn_play = (223, 60, 26, 28)
 
 # =========================
 # TEMPOS / LIMITES
@@ -165,7 +165,6 @@ def press_keys_simultaneous(keys, hold_s=HOLD_S, after_pause_s=AFTER_KEY_PAUSE_S
     time.sleep(after_pause_s)
 
 def focus_game_window():
-    """Clique leve no centro para garantir foco do client."""
     w, h = pyautogui.size()
     pyautogui.click(w // 2, int(h * 0.55))
     time.sleep(0.05)
@@ -348,12 +347,9 @@ def send_chat_line(text: str):
     time.sleep(CHAT_AFTER_SEND_WAIT_S)
 
 # =========================
-# DISTRIBUIÇÃO DE PONTOS (ARENA / INÍCIO)
+# DISTRIBUIÇÃO DE PONTOS (55/25/15/5)
 # =========================
 def apply_stat_with_validation(cmd: str, value: int, retries=2) -> bool:
-    """
-    Valida por OCR: lê pontos antes/depois (abrindo C e esperando 5s).
-    """
     before = read_points_with_c()
     log(f"[VAL] antes de {cmd}: pontos={before}")
 
@@ -378,19 +374,11 @@ def apply_stat_with_validation(cmd: str, value: int, retries=2) -> bool:
     return False
 
 def distribute_points_55_25_15_5():
-    """
-    Lê pontos atuais e distribui:
-      Força 55% / Agi 25% / Vit 15% / Ene 5%
-    """
     pts = read_points_with_c()
     log(f"[PONTOS] lidos: {pts}")
 
-    if pts is None:
-        log("[PONTOS] não consegui ler -> pulando distribuição.")
-        return
-
-    if pts <= 0:
-        log("[PONTOS] 0 pontos -> nada a distribuir.")
+    if pts is None or pts <= 0:
+        log("[PONTOS] sem pontos para distribuir.")
         return
 
     f = int(round(pts * 0.55))
@@ -398,7 +386,6 @@ def distribute_points_55_25_15_5():
     v = int(round(pts * 0.15))
     e = int(round(pts * 0.05))
 
-    # Ajuste para não passar do total (por arredondamento)
     total = f + a + v + e
     if total > pts:
         diff = total - pts
@@ -415,6 +402,77 @@ def distribute_points_55_25_15_5():
 
     final_pts = read_points_with_c()
     log(f"[DIST] pontos finais: {final_pts}")
+
+# =========================
+# JIN (reuso do seu método offsets)
+# =========================
+def click_relative_safe(dx: int, dy: int, center_y_ratio=0.55):
+    w, h = pyautogui.size()
+    cx = w // 2
+    cy = int(h * center_y_ratio)
+    pyautogui.click(cx + dx, cy + dy)
+
+def click_jin_by_offsets(hud_box, base_xy=(135, 126)) -> bool:
+    """
+    Mesma lógica que você já usava: tenta clicar Jin por offsets sem mover.
+    Ajuste os offsets conforme seu client.
+    """
+    offsets = [
+        (0, -180), (0, -160), (0, -140), (0, -120),
+        (40, -180), (-40, -180),
+        (60, -160), (-60, -160),
+        (80, -140), (-80, -140),
+        (100, -120), (-100, -120),
+        (120, -110), (-120, -110),
+        (140, -100), (-140, -100),
+        (160, -90), (-160, -90),
+        (0, -100),
+    ]
+
+    log("[JIN] Tentando cliques por offsets (sem mover)...")
+
+    for i, (dx, dy) in enumerate(offsets, 1):
+        before = get_current_xy_filtered(hud_box, samples=7, delay=0.07)
+        if not before:
+            log("[JIN] OCR falhou antes do clique, tentando próximo...")
+            continue
+
+        log(f"[JIN] tentativa {i}/{len(offsets)} click({dx},{dy}) from={before}")
+        click_relative_safe(dx, dy)
+        time.sleep(0.60)
+
+        after = get_current_xy_filtered(hud_box, samples=7, delay=0.07)
+        if not after:
+            log("[JIN] OCR falhou após clique, tentando próximo...")
+            continue
+
+        moved = (abs(after[0] - before[0]) > 1) or (abs(after[1] - before[1]) > 1)
+        if moved:
+            log(f"[JIN] virou movimento (before={before} after={after}) -> próximo offset")
+            continue
+
+        log(f"[JIN] clique sem mover (before={before} after={after}) -> OK provável")
+        return True
+
+    log("[JIN] Não conseguiu clicar sem mover. Ajuste offsets.")
+    return False
+
+def jin_interaction():
+    """
+    NOVA REGRA (pedido):
+      - Só roda quando level == 1
+      - Antes disso, distribui pontos
+    """
+    log("[FLOW] level == 1 -> distribuir pontos e depois interação com Jin.")
+    distribute_points_55_25_15_5()
+
+    # Se quiser forçar o char ir para a base do Jin antes, você pode chamar walk_to aqui.
+    # Eu mantive simples: apenas executa o clique por offsets.
+    ok = click_jin_by_offsets(HUD_BOX, base_xy=(135, 126))
+    if ok:
+        log("[JIN] interação feita (provável).")
+    else:
+        log("[JIN] falhou interação. Seguindo mesmo assim.")
 
 # =========================
 # PLANNER / SCORE
@@ -626,7 +684,7 @@ def send_move_arena_and_verify(bot: DesktopBot) -> bool:
     log("[MOVE] verificando Arena...")
     return ensure_arena(bot)
 
-def send_reset_and_wait_lorencia(bot: DesktopBot, wait_s=10.0) -> bool:
+def send_reset_and_wait_lorencia(bot: DesktopBot, wait_s=12.0) -> bool:
     log("[RESET] enviando /reset...")
     send_chat_line(RESET_CMD)
     log(f"[RESET] aguardando {wait_s:.0f}s para voltar...")
@@ -700,7 +758,7 @@ def arena_flow(bot: DesktopBot):
         log("[WARN] Não confirmei Lorencia após reset (talvez delay maior).")
 
 # =========================
-# MAIN LOOP
+# MAIN LOOP (REGRA NOVA)
 # =========================
 def main_loop():
     maestro = BotMaestroSDK.from_sys_args()
@@ -711,35 +769,45 @@ def main_loop():
     bot = DesktopBot()
 
     while True:
-        # garante que estamos em Lorencia (início do ciclo)
+        # Garante Lorencia
         if not ensure_lorencia(bot):
             log("[FLOW] Não detectei Lorencia. Tentando novamente em 5s...")
             time.sleep(5)
             continue
 
-        # lê level inicial
+        # Lê level
         level = read_level_with_c()
         log(f"[LEVEL] inicial: {level}")
 
-        # se não leu, vai cemitério por segurança
+        # Se não leu, re-tenta (evita jogar fora o fluxo)
         if level is None:
-            log("[FLOW] não consegui ler level -> indo cemitério por segurança.")
+            log("[FLOW] não consegui ler level -> tentando novamente em 10s...")
+            time.sleep(10)
+            continue
+
+        # >>> REGRA NOVA:
+        # 1) Se >1 e <100 => PULA JIN e vai CEMITÉRIO
+        # 2) Se ==1 => DISTRIBUI PONTOS e depois JIN
+        # 3) Se >=100 => MOVE ARENA
+        if 1 < level < 100:
+            log("[FLOW] 1 < level < 100 -> pular Jin -> ir cemitério -> upar até 100 -> arena.")
             go_cemiterio_and_up_until_100_then_move_arena(bot)
-        elif 1 < level < 100:
-            log("[FLOW] 1 < level < 100 -> ir cemitério e upar até 100 -> arena.")
+
+        elif level == 1:
+            log("[FLOW] level == 1 -> distribuição + Jin (depois segue o ciclo normal).")
+            jin_interaction()
+
+            # Depois do Jin, normalmente você vai upar (cemitério), então mantém o mesmo fluxo:
             go_cemiterio_and_up_until_100_then_move_arena(bot)
-        elif level >= 100:
+
+        else:  # level >= 100
             log("[FLOW] level >= 100 -> /move arena direto.")
             ok_arena = send_move_arena_and_verify(bot)
             if not ok_arena:
-                log("[FLOW] não confirmou arena -> ainda assim tentando fluxo arena após 5s.")
+                log("[FLOW] não confirmou arena -> tentando novamente em 5s.")
                 time.sleep(5)
-        else:
-            # level == 1: (se quiser encaixar fluxo Jin aqui depois, dá)
-            log("[FLOW] level == 1 -> indo cemitério por segurança.")
-            go_cemiterio_and_up_until_100_then_move_arena(bot)
 
-        # se entrou em arena, roda o fluxo completo (distribui -> rota -> play -> lvl380 -> reset)
+        # Se entrou em Arena, roda o fluxo completo
         if ensure_arena(bot):
             arena_flow(bot)
         else:
