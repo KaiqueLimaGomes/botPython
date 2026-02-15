@@ -8,6 +8,7 @@ A navegação linear já está implementada no `bot.py`. Para ajustar ao seu cli
 - `LINEAR_CLICK_JITTER`: tamanho do quadrado aleatório em volta do ponto principal.
 - `LINEAR_CLOSE_JITTER`: jitter usado quando está perto do alvo para reduzir zigue-zague.
 - `RESCUE_CLICK_SCALE`: distância usada nos cliques de emergência (quando OCR falha/trava).
+- `AXIS_LOCK_CROSS_JITTER`: jitter mínimo no eixo transversal quando o bot está em linha reta (ex.: andar só no X mantendo Y).
 
 ### Sugestões práticas
 
@@ -32,3 +33,10 @@ Se houver bloqueio/obstáculo, ele cai automaticamente para a rota por checkpoin
 Esse fluxo fica nos logs como:
 - `[ROUTE][SHORT] tentando rota direta ...`
 - `[ROUTE][SHORT] rota direta falhou -> fallback para checkpoints.`
+
+
+### Movimento em linha reta por eixo (novo)
+
+- Quando já está alinhado no mesmo **Y** do destino, o bot força direção apenas em **X** (`E`/`W`) para fazer trajetória reta.
+- Quando já está alinhado no mesmo **X** do destino, o bot força direção apenas em **Y** (`N`/`S`).
+- O parâmetro `AXIS_LOCK_CROSS_JITTER` mantém uma pequena variação no eixo cruzado para não travar clique perfeito, mas quase em linha reta.

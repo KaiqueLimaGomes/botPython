@@ -59,6 +59,7 @@ CENTER_Y_RATIO = 0.55
 LINEAR_CLICK_SCALE = 0.62
 LINEAR_CLICK_JITTER = 36
 LINEAR_CLOSE_JITTER = 22
+AXIS_LOCK_CROSS_JITTER = 3
 RESCUE_CLICK_SCALE = 0.45
 TURN_PENALTY_DEG = 18
 
@@ -311,19 +312,31 @@ def log_navigation_profile():
     log(
         "[NAV] perfil linear ativo -> "
         f"scale={LINEAR_CLICK_SCALE}, jitter={LINEAR_CLICK_JITTER}, close_jitter={LINEAR_CLOSE_JITTER}, "
-        f"rescue_scale={RESCUE_CLICK_SCALE}, turn_penalty_deg={TURN_PENALTY_DEG}"
+        f"axis_cross_jitter={AXIS_LOCK_CROSS_JITTER}, rescue_scale={RESCUE_CLICK_SCALE}, "
+        f"turn_penalty_deg={TURN_PENALTY_DEG}"
     )
 
-def click_direction_linear(direction: str, strength=LINEAR_CLICK_SCALE, jitter=LINEAR_CLICK_JITTER):
+def click_direction_linear(direction: str, strength=LINEAR_CLICK_SCALE, jitter=LINEAR_CLICK_JITTER, axis_lock: str | None = None):
     """
     Clica em um quadrado pequeno à frente do personagem para reduzir trajetos em arco.
     Isso deixa o movimento mais linear e com menos risco de bater em obstáculo lateral.
     """
     dx_base, dy_base = DIR_CLICKS[direction]
-    dx = int(dx_base * strength) + random.randint(-jitter, jitter)
-    dy = int(dy_base * strength) + random.randint(-jitter, jitter)
 
-    log(f"[DIR] {direction} -> click linear ({dx},{dy})")
+    if axis_lock == "X":
+        # Em linha reta no eixo X: quase sem variação vertical.
+        dx = int(dx_base * strength) + random.randint(-jitter, jitter)
+        dy = int(dy_base * strength) + random.randint(-AXIS_LOCK_CROSS_JITTER, AXIS_LOCK_CROSS_JITTER)
+    elif axis_lock == "Y":
+        # Em linha reta no eixo Y: quase sem variação horizontal.
+        dx = int(dx_base * strength) + random.randint(-AXIS_LOCK_CROSS_JITTER, AXIS_LOCK_CROSS_JITTER)
+        dy = int(dy_base * strength) + random.randint(-jitter, jitter)
+    else:
+        dx = int(dx_base * strength) + random.randint(-jitter, jitter)
+        dy = int(dy_base * strength) + random.randint(-jitter, jitter)
+
+    lock_msg = f" axis_lock={axis_lock}" if axis_lock else ""
+    log(f"[DIR] {direction} -> click linear ({dx},{dy}){lock_msg}")
     click_relative_safe(dx, dy)
 
 def choose_linear_direction(dx: int, dy: int, last_direction: str | None = None) -> str:
@@ -445,17 +458,27 @@ def walk_to(hud_box, target_xy: tuple[int, int], label="ALVO",
             time.sleep(0.18)
             continue
 
-        direction = choose_linear_direction(dx, dy, last_direction=last_direction)
-        if worse_streak >= 2 and direction == last_direction and quad in QUAD_PREFS:
-            # fallback: tenta segunda melhor opção do quadrante para destravar sem perder linearidade.
-            direction = QUAD_PREFS[quad][1]
-            log(f"[ADAPT] piorando {worse_streak}x -> fallback {direction}")
+        axis_lock = None
+        if abs(dy) <= tol_y and abs(dx) > tol_x:
+            # Se já está no Y do destino, anda reto apenas no X (linha horizontal curta).
+            direction = "E" if dx > 0 else "W"
+            axis_lock = "X"
+        elif abs(dx) <= tol_x and abs(dy) > tol_y:
+            # Se já está no X do destino, anda reto apenas no Y (linha vertical curta).
+            direction = "S" if dy > 0 else "N"
+            axis_lock = "Y"
+        else:
+            direction = choose_linear_direction(dx, dy, last_direction=last_direction)
+            if worse_streak >= 2 and direction == last_direction and quad in QUAD_PREFS:
+                # fallback: tenta segunda melhor opção do quadrante para destravar sem perder linearidade.
+                direction = QUAD_PREFS[quad][1]
+                log(f"[ADAPT] piorando {worse_streak}x -> fallback {direction}")
 
         dynamic_jitter = LINEAR_CLICK_JITTER
         if abs(dx) <= 6 or abs(dy) <= 6:
             dynamic_jitter = LINEAR_CLOSE_JITTER
 
-        click_direction_linear(direction, jitter=dynamic_jitter)
+        click_direction_linear(direction, jitter=dynamic_jitter, axis_lock=axis_lock)
         last_direction = direction
         time.sleep(MOVE_WAIT)
 
