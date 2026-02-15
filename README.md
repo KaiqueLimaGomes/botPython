@@ -10,6 +10,8 @@ A navegação linear já está implementada no `bot.py`. Para ajustar ao seu cli
 - `RESCUE_CLICK_SCALE`: distância usada nos cliques de emergência (quando OCR falha/trava).
 - `AXIS_LOCK_CROSS_JITTER`: jitter mínimo no eixo transversal quando o bot está em linha reta (ex.: andar só no X mantendo Y).
 - `MIN_CLICK_COMPONENT`: tamanho mínimo do clique por eixo para evitar cliques curtos demais que não movem o personagem.
+- `ENFORCE_X_HARD_DY`: em checkpoints com X fixo, enquanto faltar mais que isso no Y, prioriza andar no Y antes de microcorrigir X.
+- `ENFORCE_X_SOFT_BAND`: banda de erro de X permitida temporariamente durante avanço no Y.
 
 ### Sugestões práticas
 
@@ -47,3 +49,10 @@ Esse fluxo fica nos logs como:
 
 - Quando detecta `STUCK`, o bot agora faz **rescue direcional para o alvo** (não aleatório).
 - Se a distância piorar em sequência, ele aumenta temporariamente força/distância do clique.
+
+
+### Checkpoints com X fixo (melhoria)
+
+- O bot não fica mais travado em `NUDGE` contínuo de X quando ainda está longe no Y.
+- Primeiro ele progride no Y e depois refina X perto do checkpoint.
+- Também foi relaxado `tol_x` para `1` nos checkpoints de X fixo para reduzir oscilações e timeout.

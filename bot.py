@@ -63,6 +63,8 @@ AXIS_LOCK_CROSS_JITTER = 3
 RESCUE_CLICK_SCALE = 0.60
 TURN_PENALTY_DEG = 18
 MIN_CLICK_COMPONENT = 95
+ENFORCE_X_HARD_DY = 6
+ENFORCE_X_SOFT_BAND = 2
 
 # Limites coordenadas
 X_MIN, X_MAX = 0, 255
@@ -314,7 +316,8 @@ def log_navigation_profile():
         "[NAV] perfil linear ativo -> "
         f"scale={LINEAR_CLICK_SCALE}, jitter={LINEAR_CLICK_JITTER}, close_jitter={LINEAR_CLOSE_JITTER}, "
         f"axis_cross_jitter={AXIS_LOCK_CROSS_JITTER}, rescue_scale={RESCUE_CLICK_SCALE}, "
-        f"turn_penalty_deg={TURN_PENALTY_DEG}, min_component={MIN_CLICK_COMPONENT}"
+        f"turn_penalty_deg={TURN_PENALTY_DEG}, min_component={MIN_CLICK_COMPONENT}, "
+        f"enforce_x_hard_dy={ENFORCE_X_HARD_DY}, enforce_x_soft_band={ENFORCE_X_SOFT_BAND}"
     )
 
 def click_direction_linear(direction: str, strength=LINEAR_CLICK_SCALE, jitter=LINEAR_CLICK_JITTER, axis_lock: str | None = None, min_component=MIN_CLICK_COMPONENT):
@@ -455,10 +458,11 @@ def walk_to(hud_box, target_xy: tuple[int, int], label="ALVO",
             stuck_count = 0
             continue
 
-        # Se a ideia é "manter em X=134", priorize corrigir X mesmo com dy grande
+        # Se a ideia é "manter em X=134", NÃO fique preso em nudge quando ainda falta muito no Y.
         if enforce_x and abs(dx) > tol_x:
-            nudge_to_fix_x(cur, tx)
-            continue
+            if abs(dy) <= ENFORCE_X_HARD_DY or abs(dx) > ENFORCE_X_SOFT_BAND:
+                nudge_to_fix_x(cur, tx)
+                continue
 
         if last_dist is not None and d > last_dist + 0.5:
             worse_streak += 1
@@ -472,7 +476,11 @@ def walk_to(hud_box, target_xy: tuple[int, int], label="ALVO",
             continue
 
         axis_lock = None
-        if abs(dy) <= tol_y and abs(dx) > tol_x:
+        if enforce_x and abs(dy) > ENFORCE_X_HARD_DY:
+            # Em checkpoints de X fixo, enquanto estiver longe no Y, prioriza avanço no Y.
+            direction = "S" if dy > 0 else "N"
+            axis_lock = "Y"
+        elif abs(dy) <= tol_y and abs(dx) > tol_x:
             # Se já está no Y do destino, anda reto apenas no X (linha horizontal curta).
             direction = "E" if dx > 0 else "W"
             axis_lock = "X"
@@ -551,11 +559,11 @@ def walk_route_with_checkpoints(hud_box, checkpoints, total_timeout_s=120) -> bo
         d = dist(cur, cp) if cur else 60.0
         wanted = max(14, int(d * 0.45))
         slice_timeout = min(int(remaining * 0.90), wanted)
-        slice_timeout = max(14, slice_timeout)
+        slice_timeout = max(18, slice_timeout)
 
         # >>> REGRA: se checkpoint quer X=134, NÃO ACEITA “132 dentro do tol=3”
         enforce_x = (cp[0] == 134)
-        tol_x = 0 if enforce_x else 3
+        tol_x = 1 if enforce_x else 3
         tol_y = 3
 
         log(f"[ROUTE] Checkpoint {idx}/{len(checkpoints)} -> {cp} dist~{d:.2f} timeout={slice_timeout}s enforce_x={enforce_x}")
@@ -583,7 +591,7 @@ def walk_route_with_checkpoints(hud_box, checkpoints, total_timeout_s=120) -> bo
             return False
 
         retry_timeout = min(35, int(remaining2 * 0.55))
-        retry_timeout = max(14, retry_timeout)
+        retry_timeout = max(20, retry_timeout)
 
         ok2 = walk_to(
             hud_box, cp,
