@@ -56,6 +56,10 @@ AFTER_MOVE_WAIT_S = 10
 MAX_STEPS = 320
 MOVE_WAIT = 0.35
 CENTER_Y_RATIO = 0.55
+LINEAR_CLICK_SCALE = 0.62
+LINEAR_CLICK_JITTER = 36
+LINEAR_CLOSE_JITTER = 22
+RESCUE_CLICK_SCALE = 0.45
 
 # Limites coordenadas
 X_MIN, X_MAX = 0, 255
@@ -286,13 +290,29 @@ def primary_quadrant_xy(cur, target, tol_x, tol_y) -> str | None:
     if dy >  tol_y: return "S"
     return None
 
-def click_any_direction(strength=0.45):
-    name, (dx, dy) = random.choice(list(DIR_CLICKS.items()))
-    dx = int(dx * strength)
-    dy = int(dy * strength)
-    log(f"[ACTION] clique de emergência {name} ({dx},{dy})")
-    click_relative_safe(dx, dy)
+def click_any_direction(strength=RESCUE_CLICK_SCALE):
+    name = random.choice(list(DIR_CLICKS.keys()))
+    click_direction_linear(name, strength=strength, jitter=LINEAR_CLICK_JITTER)
     time.sleep(0.45)
+
+def log_navigation_profile():
+    log(
+        "[NAV] perfil linear ativo -> "
+        f"scale={LINEAR_CLICK_SCALE}, jitter={LINEAR_CLICK_JITTER}, close_jitter={LINEAR_CLOSE_JITTER}, "
+        f"rescue_scale={RESCUE_CLICK_SCALE}"
+    )
+
+def click_direction_linear(direction: str, strength=LINEAR_CLICK_SCALE, jitter=LINEAR_CLICK_JITTER):
+    """
+    Clica em um quadrado pequeno à frente do personagem para reduzir trajetos em arco.
+    Isso deixa o movimento mais linear e com menos risco de bater em obstáculo lateral.
+    """
+    dx_base, dy_base = DIR_CLICKS[direction]
+    dx = int(dx_base * strength) + random.randint(-jitter, jitter)
+    dy = int(dy_base * strength) + random.randint(-jitter, jitter)
+
+    log(f"[DIR] {direction} -> click linear ({dx},{dy})")
+    click_relative_safe(dx, dy)
 
 def nudge_to_fix_x(cur, target_x):
     """Pequeno ajuste lateral para forçar X ir pro valor exato (ex: manter em 134)."""
@@ -394,9 +414,13 @@ def walk_to(hud_box, target_xy: tuple[int, int], label="ALVO",
             log(f"[ADAPT] piorando {worse_streak}x -> prioridade: {prefs}")
 
         direction = prefs[0]
-        dx_click, dy_click = DIR_CLICKS[direction]
-        log(f"[DIR] {direction} -> click ({dx_click},{dy_click})")
-        click_relative_safe(dx_click, dy_click)
+
+        dynamic_jitter = LINEAR_CLICK_JITTER
+        if abs(dx) <= 6 or abs(dy) <= 6:
+            # Aproximação fina: quadrado ainda menor para evitar zigue-zague.
+            dynamic_jitter = LINEAR_CLOSE_JITTER
+
+        click_direction_linear(direction, jitter=dynamic_jitter)
         time.sleep(MOVE_WAIT)
 
     not_found(f"não chegou em {label}")
@@ -649,6 +673,7 @@ def main():
         return
 
     log(f"HUD_BOX = {HUD_BOX}")
+    log_navigation_profile()
 
     # 2) Ler level
     level = get_level_filtered(samples=7, delay=0.08)
@@ -752,4 +777,3 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         log("\nEncerrado pelo usuário (Ctrl+C).")
-s
