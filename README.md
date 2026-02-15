@@ -12,6 +12,7 @@ A navegação linear já está implementada no `bot.py`. Para ajustar ao seu cli
 - `MIN_CLICK_COMPONENT`: tamanho mínimo do clique por eixo para evitar cliques curtos demais que não movem o personagem.
 - `ENFORCE_X_HARD_DY`: em checkpoints com X fixo, enquanto faltar mais que isso no Y, prioriza andar no Y antes de microcorrigir X.
 - `ENFORCE_X_SOFT_BAND`: banda de erro de X permitida temporariamente durante avanço no Y.
+- `INITIAL_C_OPEN_DELAY` / `INITIAL_C_READ_DELAY` / `INITIAL_C_CLOSE_DELAY`: controlam o tempo da primeira abertura com `C` para leitura de level/pontos.
 
 ### Sugestões práticas
 
@@ -56,3 +57,9 @@ Esse fluxo fica nos logs como:
 - O bot não fica mais travado em `NUDGE` contínuo de X quando ainda está longe no Y.
 - Primeiro ele progride no Y e depois refina X perto do checkpoint.
 - Também foi relaxado `tol_x` para `1` nos checkpoints de X fixo para reduzir oscilações e timeout.
+
+
+### Primeira leitura de level/pontos (janela C)
+
+- A primeira verificação agora abre a janela com `C` e aguarda mais tempo antes de ler OCR.
+- Isso evita `level=None` e leitura instável de pontos quando a janela abre/fecha muito rápido.

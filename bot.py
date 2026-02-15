@@ -52,6 +52,11 @@ CHAT_OPEN_WAIT_S = 5
 CHAT_AFTER_TYPE_WAIT_S = 5
 AFTER_MOVE_WAIT_S = 10
 
+# Primeira abertura da janela (tecla C) pode ser mais lenta
+INITIAL_C_OPEN_DELAY = 1.10
+INITIAL_C_READ_DELAY = 0.80
+INITIAL_C_CLOSE_DELAY = 0.35
+
 # Movimento
 MAX_STEPS = 320
 MOVE_WAIT = 0.35
@@ -659,6 +664,18 @@ def click_jin_by_offsets(hud_box, base_xy=(135,126)) -> bool:
 # =========================
 # CHAT COMMAND + VALIDACAO HUD
 # =========================
+def get_initial_level_from_c(open_delay=INITIAL_C_OPEN_DELAY,
+                             read_delay=INITIAL_C_READ_DELAY,
+                             close_delay=INITIAL_C_CLOSE_DELAY) -> int | None:
+    """Primeira leitura de level com janela aberta mais tempo para evitar leitura vazia."""
+    pyautogui.press('c')
+    time.sleep(open_delay)
+    time.sleep(read_delay)
+    lvl = get_level_filtered(samples=8, delay=0.09)
+    pyautogui.press('c')
+    time.sleep(close_delay)
+    return lvl
+
 def read_points_from_c(hud_box_valor, open_delay=0.35, read_delay=0.35, close_delay=0.15) -> int | None:
     pyautogui.press('c')
     time.sleep(open_delay)
@@ -779,7 +796,7 @@ def main():
     log_navigation_profile()
 
     # 2) Ler level
-    level = get_level_filtered(samples=7, delay=0.08)
+    level = get_initial_level_from_c()
     log(f"[LEVEL] level filtrado (início): {level}")
 
     # 3) Lógica:
@@ -808,7 +825,12 @@ def main():
     # =========================
     # FLUXO LEVEL == 1 => VERIFICA PONTOS
     # =========================
-    valor = read_points_from_c(HUD_BOX_VALOR)
+    valor = read_points_from_c(
+        HUD_BOX_VALOR,
+        open_delay=INITIAL_C_OPEN_DELAY,
+        read_delay=INITIAL_C_READ_DELAY,
+        close_delay=INITIAL_C_CLOSE_DELAY
+    )
     if valor is None:
         log("[WARN] Não foi possível ler o valor/pontos. Indo cemitério por segurança.")
         go_cemiterio_and_up_until_100_then_move_arena(bot)
@@ -836,7 +858,12 @@ def main():
     log("Jin clicado (provável) por offsets.")
 
     # recalcula pontos (garante leitura pós-Jin)
-    valor = read_points_from_c(HUD_BOX_VALOR)
+    valor = read_points_from_c(
+        HUD_BOX_VALOR,
+        open_delay=INITIAL_C_OPEN_DELAY,
+        read_delay=INITIAL_C_READ_DELAY,
+        close_delay=INITIAL_C_CLOSE_DELAY
+    )
     if valor is None:
         log("[WARN] Não foi possível ler pontos após Jin. Indo cemitério.")
         go_cemiterio_and_up_until_100_then_move_arena(bot)
