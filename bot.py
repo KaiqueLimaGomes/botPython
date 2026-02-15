@@ -56,12 +56,13 @@ AFTER_MOVE_WAIT_S = 10
 MAX_STEPS = 320
 MOVE_WAIT = 0.35
 CENTER_Y_RATIO = 0.55
-LINEAR_CLICK_SCALE = 0.62
-LINEAR_CLICK_JITTER = 36
-LINEAR_CLOSE_JITTER = 22
+LINEAR_CLICK_SCALE = 0.72
+LINEAR_CLICK_JITTER = 32
+LINEAR_CLOSE_JITTER = 18
 AXIS_LOCK_CROSS_JITTER = 3
-RESCUE_CLICK_SCALE = 0.45
+RESCUE_CLICK_SCALE = 0.60
 TURN_PENALTY_DEG = 18
+MIN_CLICK_COMPONENT = 95
 
 # Limites coordenadas
 X_MIN, X_MAX = 0, 255
@@ -313,10 +314,10 @@ def log_navigation_profile():
         "[NAV] perfil linear ativo -> "
         f"scale={LINEAR_CLICK_SCALE}, jitter={LINEAR_CLICK_JITTER}, close_jitter={LINEAR_CLOSE_JITTER}, "
         f"axis_cross_jitter={AXIS_LOCK_CROSS_JITTER}, rescue_scale={RESCUE_CLICK_SCALE}, "
-        f"turn_penalty_deg={TURN_PENALTY_DEG}"
+        f"turn_penalty_deg={TURN_PENALTY_DEG}, min_component={MIN_CLICK_COMPONENT}"
     )
 
-def click_direction_linear(direction: str, strength=LINEAR_CLICK_SCALE, jitter=LINEAR_CLICK_JITTER, axis_lock: str | None = None):
+def click_direction_linear(direction: str, strength=LINEAR_CLICK_SCALE, jitter=LINEAR_CLICK_JITTER, axis_lock: str | None = None, min_component=MIN_CLICK_COMPONENT):
     """
     Clica em um quadrado pequeno à frente do personagem para reduzir trajetos em arco.
     Isso deixa o movimento mais linear e com menos risco de bater em obstáculo lateral.
@@ -334,6 +335,11 @@ def click_direction_linear(direction: str, strength=LINEAR_CLICK_SCALE, jitter=L
     else:
         dx = int(dx_base * strength) + random.randint(-jitter, jitter)
         dy = int(dy_base * strength) + random.randint(-jitter, jitter)
+
+    if direction in ("E", "W") and abs(dx) < min_component:
+        dx = min_component if dx >= 0 else -min_component
+    if direction in ("N", "S") and abs(dy) < min_component:
+        dy = min_component if dy >= 0 else -min_component
 
     lock_msg = f" axis_lock={axis_lock}" if axis_lock else ""
     log(f"[DIR] {direction} -> click linear ({dx},{dy}){lock_msg}")
@@ -362,6 +368,13 @@ def choose_linear_direction(dx: int, dy: int, last_direction: str | None = None)
             best_direction = direction
 
     return best_direction
+
+def click_towards_target_rescue(dx: int, dy: int):
+    """Rescue direcionado: usa o vetor do alvo com força maior para tentar destravar."""
+    direction = choose_linear_direction(dx, dy, last_direction=None)
+    log(f"[RESCUE] direcional -> {direction}")
+    click_direction_linear(direction, strength=0.92, jitter=24, min_component=130)
+    time.sleep(0.45)
 
 def nudge_to_fix_x(cur, target_x):
     """Pequeno ajuste lateral para forçar X ir pro valor exato (ex: manter em 134)."""
@@ -438,7 +451,7 @@ def walk_to(hud_box, target_xy: tuple[int, int], label="ALVO",
             if enforce_x and abs(dx) > 0:
                 nudge_to_fix_x(cur, tx)
             else:
-                click_any_direction()
+                click_towards_target_rescue(dx, dy)
             stuck_count = 0
             continue
 
@@ -475,10 +488,24 @@ def walk_to(hud_box, target_xy: tuple[int, int], label="ALVO",
                 log(f"[ADAPT] piorando {worse_streak}x -> fallback {direction}")
 
         dynamic_jitter = LINEAR_CLICK_JITTER
+        dynamic_strength = LINEAR_CLICK_SCALE
+        dynamic_min_component = MIN_CLICK_COMPONENT
+
         if abs(dx) <= 6 or abs(dy) <= 6:
             dynamic_jitter = LINEAR_CLOSE_JITTER
 
-        click_direction_linear(direction, jitter=dynamic_jitter, axis_lock=axis_lock)
+        if worse_streak >= 2:
+            # Se não está aproximando, aumenta alcance do clique para sair da inércia.
+            dynamic_strength = 0.85
+            dynamic_min_component = 120
+
+        click_direction_linear(
+            direction,
+            strength=dynamic_strength,
+            jitter=dynamic_jitter,
+            axis_lock=axis_lock,
+            min_component=dynamic_min_component,
+        )
         last_direction = direction
         time.sleep(MOVE_WAIT)
 
